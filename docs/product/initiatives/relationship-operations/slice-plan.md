@@ -1,7 +1,7 @@
 # Integrated R1 Relationship Operations — Slice Plan
 
-> **Version:** v0.1  
-> **Status:** Draft — extracted from approved Technical Plan v1.4; pending human review  
+> **Version:** v1.0  
+> **Status:** Approved — governing R1 Slice Plan; SL-1 **NOT READY** pending dedicated readiness/elaboration  
 > **Owner:** engineering owner (R1)  
 > **Initiative:** R1 Relationship Operations — [`brief.md`](brief.md)  
 > **Governing Specs:** S1 [`lead-opportunity-lifecycle.md`](specs/lead-opportunity-lifecycle.md) · S2 [`situational-progression-next-work-human-authority.md`](specs/situational-progression-next-work-human-authority.md) · S3 [`visit-progression-outcome-evidence-reconciliation.md`](specs/visit-progression-outcome-evidence-reconciliation.md) · S4 [`work-portfolio-supervisory-experience.md`](specs/work-portfolio-supervisory-experience.md)  
@@ -16,7 +16,7 @@ This is the first Gu OS initiative migrated to the Slice planning model of Metho
 ## 1. How to read this plan
 
 - The **Specs** own intended behavior. A Slice owns a bounded increment that proves part of it, or a required enabling capability.
-- Slice contracts are written **rolling wave**: SL-0 as a completed historical Slice, SL-1 as a full draft contract, SL-2…SL-13 as stubs carrying only enough to sequence, size and prioritize them.
+- Slice contracts are written **rolling wave**: SL-0 as a completed historical Slice, SL-1 as a fully elaborated contract, SL-2…SL-13 as stubs carrying only enough to sequence, size and prioritize them.
 - **Tasks are not written here.** They are derived by the coding agent once a Slice is Ready, Planned and Executable.
 - **Readiness lives here; execution stage does not.** A Slice can be READY with nobody assigned; the Accountable / DRI is confirmed at planning time and recorded in §5.
 - Nothing in this document is a live status board. See §5.
@@ -41,8 +41,8 @@ Order, dependencies and Release Scope at a glance. Detail lives in §4; technica
 
 | Slice | Title | Type | Depends on | Inspectable outcome (one line) | Release Scope | Readiness |
 |---|---|---|---|---|---|---|
-| SL-0 | Org substrate & pilot bootstrap | enabling capability | — | Alebrixe is a real Organization in the system, and Organization-owned data is provably isolated from other tenants | RS-2 (achieved) | **Done** — see §6 |
-| SL-1 | Gateway reads v1 (bootstrap) | enabling capability | SL-0 | Gu OS can read a real Alebrixe lead, its recent thread-aware messages, an appointment and a property from the operational sources, each carrying provenance and freshness, with no prospect-facing effect | RS-2 | **NOT READY** — see §4 |
+| SL-0 | Org substrate & pilot bootstrap | enabling capability | — | Alebrixe is a real Organization in the system, and Organization-owned data is provably isolated from other tenants | RS-2 (achieved) | N/A — historical Done; see §6 |
+| SL-1 | Gateway reads v1 (bootstrap) | enabling capability | SL-0 | Four bounded read capabilities exist and are fixture-verified with provenance, freshness and an Organization binding check; the real hosted path is proven in staging for an Alebrixe lead and its thread-aware messages | RS-2 | **NOT READY** — see §4 |
 | SL-2 | Admission (shadow) | behavior | SL-0, SL-1 | Real inbound leads produce admission dispositions and shadow Opportunity Cases with visible policy-version attribution | RS-2 (indicated) | NOT READY — stub |
 | SL-3 | Duplicate & supersession flows | behavior | SL-2 | Duplicate and superseded leads resolve to one canonical Opportunity with queryable lineage, without mutating Case rows | RS-2 (indicated) | NOT READY — stub |
 | SL-4 | Supervisor loop (shadow) | behavior | SL-2 | Multi-day shadow Opportunities carry a coherent posture history and tracked commitments, reconstructable by replay | RS-2 (indicated) | NOT READY — stub |
@@ -57,7 +57,7 @@ Order, dependencies and Release Scope at a glance. Detail lives in §4; technica
 | SL-12 | Portfolio v2 (contextual ranking) | behavior | SL-7 (+SL-8 for richer evidence) | Ranking is model-contextual with evidence-grounded explanations, and must-surface work is never suppressed | TBD at elaboration | NOT READY — stub |
 | SL-13 | Economics v1 | behavior | SL-9 | The send path emits keyed usage that rolls up to a proven identity, and late valuations land without rewriting history | TBD at elaboration | NOT READY — stub |
 
-`[L:Cn]` = needs cross-repo contract Cn live (Technical Plan §4). Readiness is a property of the Slice (Methodology §10.2); **no Accountable / DRI, Execution Cycle or planning status is assigned in this document.**
+`[L:Cn]` = needs cross-repo contract Cn live (Technical Plan §4). Readiness is a property of the Slice (Methodology §10.2), and its only values are **READY** and **NOT READY**; **no Accountable / DRI, Execution Cycle or planning status is assigned in this document.** SL-0 is not evaluated for readiness at all — it is completed history, and **Done is a completion concept, never a third readiness value.**
 
 ## 4. Slice contracts
 
@@ -91,10 +91,13 @@ Order, dependencies and Release Scope at a glance. Detail lives in §4; technica
 
 ### SL-1 — Gateway reads v1 (bootstrap)
 
-**Full draft contract.** This is the next candidate for execution. It is a **structural planning artifact only** — no Tasks, file-level plans or implementation decisions are made here.
+**Fully elaborated contract** (rolling-wave depth, not document status). This is the next candidate for execution. It is a **planning artifact only** — no Tasks, file-level plans or implementation decisions are made here, and approval of this plan does not authorize execution.
 
 - **Type:** enabling capability. SL-1 delivers a prerequisite contract that SL-2 and every later shadow Slice depend on; it is independently verifiable in its own right, and it produces no user-visible Relationship behavior on its own.
-- **Inspectable outcome / value:** Gu OS can read, from the real operational sources for the Alebrixe Organization, a lead's context, its recent **thread-aware** messages, an appointment and a property — each result carrying **provenance and freshness metadata**, each read gated by an Organization external-binding check, and none of it capable of any prospect-facing effect. When a legacy source shape drifts away from the recorded fixture, an operator is paged rather than the system silently returning wrong data.
+- **Inspectable outcome / value:** two distinct things become true, and the contract below proves exactly these and no more.
+  - **(a) The bounded read capability surface exists and is contract-verified.** All four capabilities — lead context, recent **thread-aware** messages, appointment read, property read — return normalized results against recorded contract fixtures, each carrying **provenance and freshness metadata**, each gated by an Organization external-binding check, with no generic CRUD tool and no reachable prospect-facing effect. When a source shape drifts away from its fixture, an operator is paged rather than the system silently returning wrong data.
+  - **(b) The real hosted read path is proven — for the lead and its messages.** In staging, a **real Alebrixe lead** is read with provenance and freshness, and its recent messages are read thread-aware.
+  - **Deliberately not claimed:** the appointment and property capabilities are established and fixture-verified under (a), but the approved v1.4 DoD does **not** require them to be exercised against real hosted data, so this Slice does not claim a real appointment or a real property was operationally read. Strengthening the hosted evidence contract to cover them would be an explicit decision at the readiness/elaboration pass, not a silent addition during this migration.
 - **Governing behavior / traceability:**
   - **TD-5** — Operational gateway & fresh-read capabilities (hybrid target): the capability surface `legacy_lead_get_context`, `legacy_lead_get_recent_messages`, `appointment_get`, `property_get_details`; direct adapters sanctioned **only as shadow/bootstrap**; collection allowlist in code; org external-binding check before every read; provenance on every result; contract-fixture tests + drift alarms; no generic CRUD tool, ever.
   - **TD-1** — `organization_tool_secrets` with providers `traditional_gu_firestore` / `traditional_gu_mongo`; CURRENT `account_tool_secrets` untouched.
@@ -105,7 +108,7 @@ Order, dependencies and Release Scope at a glance. Detail lives in §4; technica
   - **Enabled but NOT proved by this Slice** — recorded so the traceability is not overstated: S2 **AC-20** ("BigQuery stale but fresh conversation changed → fresh operational source governs live decisions") describes supervisor behavior that consumes these reads. SL-1 supplies the capability; the scenario is proved where that decision behavior lands, not here. No S1/S2/S3/S4 acceptance scenario is claimed as proved by SL-1.
 - **Dependencies:**
   - **SL-0** — satisfied. `organization_tool_secrets` landed in `00080_organizations_core`; `packages/db/src/queries/organizations.ts` and `authorizeOrgAction` exist; the external-binding resolution SL-1's per-read check depends on was evidenced in Gate A.
-  - **Alebrixe legacy read credentials** — Mongo keys collection-scoped; the Firestore credential documented as whole-database read, an explicitly accepted, time-boxed, shadow-only risk (TD-5). Technical Plan §11 lists these as an **assumption** ("obtainable"), *not* as satisfied — unlike the Alebrixe key/seat mapping, which §11 explicitly marks satisfied at SL-0. **Outside our control → Definition of Ready dependency case C.**
+  - **Alebrixe legacy read credentials** — Mongo keys collection-scoped; the Firestore credential documented as whole-database read, an explicitly accepted, time-boxed, shadow-only risk (TD-5). Technical Plan §11 lists these as an **assumption** ("obtainable"), *not* as satisfied — unlike the Alebrixe key/seat mapping, which §11 explicitly marks satisfied at SL-0. **Dependency classification (case A / B / C per Methodology §10.2) is pending first-hand verification during the dedicated SL-1 readiness pass**: no current source establishes whether the credentials already exist, are ours to issue and schedulable before execution, or depend on a party outside our control. The classification changes what readiness requires, so it is verified rather than inferred.
   - **Staging environment with pilot credentials** — Technical Plan §8 requires "a staging pass with pilot credentials before each stage gate".
   - **Not** dependent on C6: TD-5 sanctions direct bootstrap adapters for shadow stages, and C6 is a hard gate before **SL-9**, not before SL-1.
 - **Release Scope:** **RS-2 (hosted).** Grounded, not assumed: the approved DoD requires a "staging read of real Alebrixe lead with provenance + freshness metadata", which is environment evidence a disposable CI environment cannot establish (Methodology §11.5, §14.2). RS-1 would silently lower an existing evidence requirement. RS-3 is not implied — SL-1 is a shadow-stage Slice with no prospect-facing effect, and production rollout is the separate Gate B.
@@ -123,7 +126,7 @@ Order, dependencies and Release Scope at a glance. Detail lives in §4; technica
 
 | ID | What must be demonstrably true | Governing source | Evidence type |
 |---|---|---|---|
-| SA-1.1 | Each of the four capabilities returns a normalized result against a recorded contract fixture | TD-5 capability surface | deterministic selftest |
+| SA-1.1 | Each of the four capabilities returns a normalized result against a recorded contract fixture, carrying provenance and freshness metadata | TD-5 capability surface ("provenance on every result") | deterministic selftest |
 | SA-1.2 | A **real Alebrixe lead** is read in staging, and the result carries provenance **and** freshness metadata | TD-5; Technical Plan §9 DoD; AC-1 §6.5 | hosted verification |
 | SA-1.3 | Recent messages are **thread-aware** — Gu and `asesor_*` documents, with `source` and `delivery_status` per item | TD-5 (audit §10.1/§15.7) | deterministic selftest + hosted verification |
 | SA-1.4 | A fixture shape mismatch **fires the drift alarm** rather than silently returning wrong data | TD-5 drift alarms | deterministic selftest (injected mismatch) |
@@ -144,10 +147,8 @@ SA-1.6 and SA-1.7 are **slice-local assertions**: they restate invariants the go
 **Readiness**
 
 - **NOT READY.**
-- **Blocking reason:** two, both concrete.
-  1. **Dependency case C** (Methodology §10.2) — the Alebrixe legacy read credentials are outside our control and Technical Plan §11 records them as an assumption, not a satisfied fact. Without them SA-1.2, SA-1.3 and SA-1.5 cannot be evidenced, and RS-2 cannot be reached.
-  2. **No dedicated SL-1 readiness/elaboration pass has been performed.** This contract was extracted structurally from the approved Technical Plan; the acceptance contract has not yet been checked against first-hand inspection of the current legacy source shapes recorded in [`legacy-source-audit.md`](legacy-source-audit.md), which is what would make SA-1.1/SA-1.3 fixture-derivable.
-- **Not blocking:** governing behavior is approved (Technical Plan v1.4 is Approved; TD-5 and AC-1 are accepted); Release Scope is declared; security impact is assessed; the estimate is recorded; SL-0 is satisfied. **Readiness is not assignment** — no DRI is named here, and naming one would not change this result.
+- **Blocking reason: no dedicated SL-1 readiness/elaboration pass has been performed.** This contract was extracted structurally from the approved Technical Plan; the acceptance contract has not yet been checked against first-hand inspection of the current legacy source shapes recorded in [`legacy-source-audit.md`](legacy-source-audit.md), which is what would make SA-1.1/SA-1.3 fixture-derivable. That pass must also establish the credential dependency's A / B / C classification (above) and confirm whether it is actually satisfied — until then, whether credentials are a second blocker is itself unverified.
+- **Not blocking:** governing behavior is approved (Technical Plan v1.4/v1.5 is Approved; TD-5 and AC-1 are accepted); Release Scope is declared; security impact is assessed; an initial estimate is recorded; SL-0 is satisfied. **Readiness is not assignment** — no DRI is named here, and naming one would not change this result.
 - Whether SL-1 becomes READY is decided in a separate, explicit readiness/elaboration pass.
 
 ---
@@ -205,9 +206,10 @@ Present only while no Development Control Plane exists, and deliberately minimal
 | Slice | Execution Cycle | Accountable / DRI | Estimate (frozen at Ready) | Actual to evidence-ready | Human/external wait | Calendar elapsed | Re-planning events | Reopened after Done | Declared → required Release Scope | New verification capability built? |
 |---|---|---|---|---|---|---|---|---|---|---|
 | SL-0 | not recorded | not recorded | not available — predates Slice calibration model | not recorded | not recorded | not recorded | not recorded | no | RS-2 → RS-2 | yes — DB-backed cross-tenant suite (`npm run test:rls`) and its CI job |
-| SL-1 | — | — | 2–3 days / Medium *(recorded in the contract; not yet frozen — SL-1 is NOT READY)* | — | — | — | — | — | RS-2 → — | — |
 
-SL-2…SL-13 have no register rows: nothing has been planned, assigned or executed, and fabricating rows would manufacture execution history. Metrics are recorded for the first 3–5 real Slices to calibrate estimate bias and variance (Methodology §17.1); they do not establish a productivity multiplier. SL-0 predates the model, so R1's calibration series begins at SL-1.
+**SL-1…SL-13 have no register rows.** A Slice enters this register when the planning facts it records actually exist, not before. SL-1's `2–3 days / Medium` is an **initial** estimate living in its durable contract (§4); it is not frozen, because freezing happens at READY and SL-1 is NOT READY. It can be frozen here when SL-1 becomes READY, and Cycle plus confirmed Accountable / DRI can be recorded when it becomes `Planned`. Copying the estimate here now would make this register a duplicate of the durable contract and imply planning that has not happened.
+
+Metrics are recorded for the first 3–5 real Slices to calibrate estimate bias and variance (Methodology §17.1); they do not establish a productivity multiplier. SL-0 predates the model, so R1's calibration series begins at SL-1.
 
 ## 6. Done records
 
@@ -226,6 +228,7 @@ No Done records exist for SL-1…SL-13.
 | Version | Date | Change |
 |---|---|---|
 | v0.1 | 2026-09-03 | Initial Slice Plan. Slice contracts extracted from approved Technical Plan v1.4 §9 under Methodology v0.3.1: SL-0 as a completed historical Slice referencing its existing closure evidence, SL-1 as a full draft contract, SL-2…SL-13 as rolling-wave stubs. No R1 scope, behavior, acceptance meaning, architecture decision, cross-repo contract, rollout model or sequencing changed. Status: Draft, pending human review. |
+| v1.0 | 2026-09-03 | **Approved as the governing R1 Slice Plan** after human review of the first initiative migrated to the Slice model. Four review corrections applied, all narrowing claims rather than changing scope: (1) the SL-1 credential dependency no longer asserts Definition-of-Ready **case C** — Technical Plan §11 says only "obtainable" and establishes no class, so classification is deferred to the dedicated SL-1 readiness pass, and SL-1 is NOT READY for the elaboration reason alone; (2) SL-1's inspectable outcome now separates the four fixture-verified capabilities from the hosted evidence the approved v1.4 DoD actually requires, and explicitly disclaims any real appointment or property read; (3) SL-0's readiness cell reads `N/A — historical Done` so that **Done** stays a completion concept and never becomes a third readiness value; (4) SL-1's pre-READY row was removed from the transitional execution register — its initial estimate stays in the durable contract and is frozen only at READY. **Approval means** the artifact structure is approved and the recorded contracts and stubs are the governing planning truth. **It does not mean** SL-1 is READY, PLANNED or EXECUTABLE, nor that implementation may begin. |
 
 ## 8. Open questions surfaced by this migration
 
@@ -236,6 +239,6 @@ Recorded rather than silently resolved, per Methodology §15 and the migration i
 | Q1 | **Acceptance-identifier namespace collision.** `AC-1…AC-10` are *architecture contracts* (Architecture Analysis §6–§15), while S1 and S2 use zero-padded `AC-01…AC-nn` for *Spec acceptance scenarios*. So `AC-7` and `AC-07` are different things in different documents, and S3 references `AC-2 / AC-7 / AC-8` meaning the architecture contracts. | Slice traceability depends on identifiers being unambiguous. A future Slice contract citing "AC-7" is genuinely ambiguous. | Human decision. This plan disambiguates in prose everywhere (writing "architecture contract AC-1" or "S2 AC-20"). A durable fix would be a naming convention, which is a documentation-governance decision outside this migration. |
 | Q2 | **SL-5's Release Scope is not derivable.** Its title says "(prod)" and its DoD retires polling, but Technical Plan §5 places SL-5 inside the **shadow** stage (SL-0…SL-8b, no prospect-facing effects). "Prod" appears to mean the production *wake-up path* rather than a production *release*. | RS-2 versus RS-3 changes the Done boundary and the authority required. | Left as `TBD at elaboration`. Needs confirmation from the Technical Plan owner; not resolvable without redesigning meaning. |
 | Q3 | **Where the RS-3 boundary falls for the assisted stage.** SL-9 and SL-10 produce real external effects visible in legacy stores (a `wamid`-correlated prospect message; an appointment round-trip). Whether that constitutes RS-3 "production" under Methodology §14.2, or RS-2 hosted evidence in a pilot-scoped environment, is not stated by any current source. | This determines whether the playbook's production release path (§7 — explicit authorization, read-only preflight, canary, rollback) is engaged for those Slices. | Left as `TBD at elaboration`. This is a release-authority question for a human, and deliberately not decided here. |
-| Q4 | **SL-1's credentials are an assumption, not a satisfied dependency.** Technical Plan §11 lists bootstrap read credentials as "obtainable", and explicitly marks the *other* SL-1-adjacent assumption (Alebrixe key/seat mapping) as satisfied at SL-0. | Under Definition of Ready dependency case C this is what makes SL-1 NOT READY, independent of any elaboration work. | Recorded as SL-1's first blocking reason. Obtaining and scoping the credentials is coordination work, not engineering work. |
+| Q4 | **SL-1's read credentials are an unresolved readiness dependency of unknown class.** Technical Plan §11 says only that bootstrap read credentials are "obtainable", and explicitly marks the *other* SL-1-adjacent assumption (Alebrixe key/seat mapping) as satisfied at SL-0. No current source establishes whether the credentials are already satisfied (case A), ours to issue and schedulable before execution (case B), or dependent on a party outside our control (case C). | The class determines what readiness requires and whether obtaining them is engineering work or coordination work. Asserting a class without evidence would fabricate a constraint. | **Classification deferred to the dedicated SL-1 readiness pass**, which must verify first-hand who controls the credentials and whether they already exist. SL-1 is NOT READY in this plan for the elaboration reason alone; whether credentials add a second blocker is itself unverified. |
 
 Nothing in this section blocks review of the structure itself; Q2 and Q3 block only the Release Scope fields they name.
