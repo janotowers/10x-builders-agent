@@ -1,6 +1,6 @@
 # Gu OS Agentic Product & Software Development Methodology
 
-> **Version:** v0.3.1  
+> **Version:** v0.3.2  
 > **Status:** Canonical development methodology  
 > **Scope:** Tool-agnostic operating method for humans + coding agents  
 > **Intended repo path:** `docs/development/agentic-product-software-development-methodology.md`
@@ -290,10 +290,14 @@ Proportionally to the Slice's consequence, a Slice is **READY** when:
 | **Case** | **Dependency situation**                                                                                                                                                          | **Effect**                                                                     |
 |----------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------|
 | A        | Satisfied.                                                                                                                                                                        | READY.                                                                          |
-| B        | Controlled by our team, planned earlier in the same Execution Cycle, and expected with sufficient confidence to satisfy its contract before this Slice starts.                     | MAY be READY for planning, but **not EXECUTABLE** until actually satisfied.     |
+| B        | Controlled by our team, with a **concrete prerequisite contract** and sufficient confidence that it can be satisfied before the dependent Slice starts.                            | MAY be READY. Cycle planning must then **sequence the prerequisite before** the dependent Slice. **Not EXECUTABLE** until actually satisfied. |
 | C        | Unresolved and outside our control.                                                                                                                                               | NOT READY.                                                                      |
 
 There is deliberately no generic "planned but externally blocked" exception: case C is simply not ready.
+
+**Case B is a readiness test, not a scheduling fact.** What readiness asks of a case-B dependency is only that it is ours and that its prerequisite is concrete enough to be satisfied deliberately — not that it has already been scheduled. Requiring it to be "planned in the same Cycle" would be circular, because readiness is what makes a Slice eligible for Cycle planning in the first place. The scheduling obligation is real, but it belongs to Cycle planning (Section 12.1), and it is the reason a case-B Slice can be READY yet never silently start before its prerequisite lands.
+
+"Concrete" means the prerequisite can be stated as a bounded contract — what must exist, at what scope, and who provides it — without executing the dependent Slice to find out. A prerequisite whose shape can only be discovered by running the Slice that depends on it is not concrete, and the Slice is not READY.
 
 **READY is not PLANNED, and PLANNED is not necessarily EXECUTABLE.** Readiness makes a Slice eligible for a Cycle; planning puts it in one and confirms its Accountable; executability additionally requires that prerequisites are actually satisfied and capacity is available. See Section 12.1.
 
@@ -442,6 +446,8 @@ An **Execution Cycle** is a short, tool-agnostic planning time box, analogous in
 The Execution Cycle is a short-horizon *planning container*. It does **not** replace product roadmap sequencing, architecture dependencies, evidence gates or release authority.
 
 **How a Cycle is formed.** The system or agent may propose READY Slices for the upcoming Cycle based on roadmap priority, dependencies, capacity, estimates, risk and continuity of work in progress, and may propose an Accountable / DRI for each. The human or team then reviews the proposed Cycle.
+
+**Cycle planning owns dependency sequencing.** When a Slice carrying a case-B dependency (Section 10.2) is confirmed into a Cycle, planning must schedule that prerequisite **before** the dependent Slice — as its own Slice where it is engineering work, or as named coordination work where it is not. This is where the "planned before it" obligation lives: readiness establishes that the prerequisite is ours and concrete, planning decides when it happens. Scheduling is not approval, so this adds no gate.
 
 | **Status**   | **Meaning**                                                                                                                                     |
 |--------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -786,7 +792,7 @@ Adoption should itself be brownfield. Do not stop engineering to rewrite all his
 
 | **Order** | **Action**                                                                                                                                                                                                                                                                                                                                                                   |
 |-----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Step 1    | Maintain this Methodology (current v0.3.1) as the canonical development method, including the four-layer agent instruction architecture, proportional test/eval-first guidance, and the Slice / Execution Cycle planning model.                                                                                                                                                                                                                             |
+| Step 1    | Maintain this Methodology (current v0.3.2) as the canonical development method, including the four-layer agent instruction architecture, proportional test/eval-first guidance, and the Slice / Execution Cycle planning model.                                                                                                                                                                                                                             |
 | Step 2    | Audit current docs, strategic documents and agent-instruction files using a matrix: retain canonical / contributes to PRD / link from PRD / merge / supersede / historical/archive / agent-adapter-only. Treat apps/web/AGENTS.md and apps/web/CLAUDE.md as tracked app-scoped adapters.                                                                                     |
 | Step 3    | Create the canonical Gu / Gu OS Product PRD from reconciled existing material, not from a blank page.                                                                                                                                                                                                                                                                        |
 | Step 4    | Maintain the concise Principles & Design Doctrine as the canonical decision-doctrine artifact, using the adjudicated Registry, this Methodology and product intent as governed inputs rather than duplicating their responsibilities.                                                                                                      |
@@ -817,6 +823,18 @@ Three inconsistencies are repaired:
 3. **"Where is the work right now" was attributed wholly to GitHub**, which is broader than GitHub's actual authority. Before a PR exists that state lives in the agent runtime; GitHub owns what execution has recorded — branch, commits, PR, CI, merge state, Actions, environment approvals and the deployment evidence it generates (Sections 4, 19.1).
 
 Unchanged: the artifact ownership model, the four verification layers, Release Scope RS-1/RS-2/RS-3 and the Done boundary, failure classification and owning-artifact repair, and the human authority boundaries of Section 12. **Selecting or planning a Slice remains scheduling, not an approval gate.**
+
+# 23.4 v0.3.2 update note
+
+v0.3.2 repairs a circularity in the v0.3.0 dependency rule, found by the **first real Definition-of-Ready evaluation** (R1 SL-1, 2026-09-03). It is a semantic correction to one rule; the governance model is unchanged.
+
+**The defect.** Case B required the dependency to be *"planned earlier in the same Execution Cycle"* as a condition of the dependent Slice becoming READY. But Section 10.2 also defines READY as what makes a Slice *eligible for Cycle planning*, and Section 12.1 places Cycle planning after readiness. So a Slice could not become READY without a Cycle fact that only exists after it is READY. In practice the rule also assumed every prerequisite is itself a Slice, which a provisioning or coordination prerequisite need not be.
+
+**The correction.** Readiness now asks only what readiness can answer: is the dependency ours, and is its prerequisite **concrete** — statable as a bounded contract without executing the dependent Slice to discover it? The scheduling obligation is not dropped; it moves to where it belongs, Cycle planning (Section 12.1), which must sequence a case-B prerequisite before the dependent Slice.
+
+**What is preserved.** READY remains intrinsic to the Slice and still precedes Cycle planning; it still requires no Accountable / DRI and no Cycle. `Planned` still confirms Cycle inclusion and a confirmed human Accountable. `Executable` still requires prerequisites *actually* satisfied plus capacity. Sequencing inside Cycle planning is scheduling, not approval, so **no additional approval gate is introduced** — Section 12.1's standing rule that cycle planning is not an approval gate is untouched.
+
+Affected: Section 10.2 (the case-B row plus the note distinguishing readiness from scheduling), Section 12.1 (the sequencing obligation), and `templates/slice-plan-template.md`, which duplicated the old wording.
 
 # 24. Working glossary
 
