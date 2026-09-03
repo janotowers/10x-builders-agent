@@ -71,7 +71,7 @@ Cover proportionally: the happy path, the material unhappy paths, the relevant e
 **Readiness**
 
 - {{READY / NOT READY}} — {{blocking gap, if any}}
-- Dependency case: {{A satisfied / B ours, planned earlier this Cycle — Ready but not Executable until satisfied / C outside our control — not Ready}}
+- Dependency case: {{A satisfied / B ours with a concrete prerequisite contract — may be Ready, Cycle planning sequences the prerequisite first, not Executable until satisfied / C outside our control — not Ready}}
 
 Readiness describes the Slice, not the team: a Slice can be READY with nobody assigned. The Accountable / DRI is confirmed when the Slice is planned into a Cycle and is recorded in §5, not here.
 
