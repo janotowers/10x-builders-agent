@@ -16,7 +16,7 @@ This is the first Gu OS initiative migrated to the Slice planning model of Metho
 ## 1. How to read this plan
 
 - The **Specs** own intended behavior. A Slice owns a bounded increment that proves part of it, or a required enabling capability.
-- Slice contracts are written **rolling wave**: SL-0 as a completed historical Slice, SL-1 as a fully elaborated contract, SL-2…SL-13 as stubs carrying only enough to sequence, size and prioritize them.
+- Slice contracts are written **rolling wave**: SL-0 as a completed historical Slice, SL-1 as a **full Slice contract at the current planning depth**, SL-2…SL-13 as stubs carrying only enough to sequence, size and prioritize them. "Full" describes depth relative to the stubs, not finality — a Slice contract can still be refined by its readiness/elaboration pass.
 - **Tasks are not written here.** They are derived by the coding agent once a Slice is Ready, Planned and Executable.
 - **Readiness lives here; execution stage does not.** A Slice can be READY with nobody assigned; the Accountable / DRI is confirmed at planning time and recorded in §5.
 - Nothing in this document is a live status board. See §5.
@@ -42,7 +42,7 @@ Order, dependencies and Release Scope at a glance. Detail lives in §4; technica
 | Slice | Title | Type | Depends on | Inspectable outcome (one line) | Release Scope | Readiness |
 |---|---|---|---|---|---|---|
 | SL-0 | Org substrate & pilot bootstrap | enabling capability | — | Alebrixe is a real Organization in the system, and Organization-owned data is provably isolated from other tenants | RS-2 (achieved) | N/A — historical Done; see §6 |
-| SL-1 | Gateway reads v1 (bootstrap) | enabling capability | SL-0 | Four bounded read capabilities exist and are fixture-verified with provenance, freshness and an Organization binding check; the real hosted path is proven in staging for an Alebrixe lead and its thread-aware messages | RS-2 | **NOT READY** — see §4 |
+| SL-1 | Gateway reads v1 (bootstrap) | enabling capability | SL-0 | Four bounded read capabilities exist and are fixture-verified with provenance and an Organization binding check; the real hosted path is proven in staging for an Alebrixe lead — with provenance and freshness metadata — and its thread-aware messages | RS-2 | **NOT READY** — see §4 |
 | SL-2 | Admission (shadow) | behavior | SL-0, SL-1 | Real inbound leads produce admission dispositions and shadow Opportunity Cases with visible policy-version attribution | RS-2 (indicated) | NOT READY — stub |
 | SL-3 | Duplicate & supersession flows | behavior | SL-2 | Duplicate and superseded leads resolve to one canonical Opportunity with queryable lineage, without mutating Case rows | RS-2 (indicated) | NOT READY — stub |
 | SL-4 | Supervisor loop (shadow) | behavior | SL-2 | Multi-day shadow Opportunities carry a coherent posture history and tracked commitments, reconstructable by replay | RS-2 (indicated) | NOT READY — stub |
@@ -91,13 +91,14 @@ Order, dependencies and Release Scope at a glance. Detail lives in §4; technica
 
 ### SL-1 — Gateway reads v1 (bootstrap)
 
-**Fully elaborated contract** (rolling-wave depth, not document status). This is the next candidate for execution. It is a **planning artifact only** — no Tasks, file-level plans or implementation decisions are made here, and approval of this plan does not authorize execution.
+**Full Slice contract at the current rolling-wave planning depth** — substantially more detail than the SL-2…SL-13 stubs, and still open to refinement by the dedicated readiness/elaboration pass, which has not run. This is the next candidate for execution, not an authorized one. It is a **planning artifact only**: no Tasks, file-level plans or implementation decisions are made here, and approval of this plan does not authorize execution.
 
 - **Type:** enabling capability. SL-1 delivers a prerequisite contract that SL-2 and every later shadow Slice depend on; it is independently verifiable in its own right, and it produces no user-visible Relationship behavior on its own.
 - **Inspectable outcome / value:** two distinct things become true, and the contract below proves exactly these and no more.
-  - **(a) The bounded read capability surface exists and is contract-verified.** All four capabilities — lead context, recent **thread-aware** messages, appointment read, property read — return normalized results against recorded contract fixtures, each carrying **provenance and freshness metadata**, each gated by an Organization external-binding check, with no generic CRUD tool and no reachable prospect-facing effect. When a source shape drifts away from its fixture, an operator is paged rather than the system silently returning wrong data.
-  - **(b) The real hosted read path is proven — for the lead and its messages.** In staging, a **real Alebrixe lead** is read with provenance and freshness, and its recent messages are read thread-aware.
+  - **(a) The bounded read capability surface exists and is contract-verified.** All four capabilities — lead context, recent **thread-aware** messages, appointment read, property read — return normalized results against recorded contract fixtures, each carrying **provenance**, each gated by an Organization external-binding check, with no generic CRUD tool and no reachable prospect-facing effect. When a source shape drifts away from its fixture, an operator is paged rather than the system silently returning wrong data.
+  - **(b) The real hosted read path is proven — for the lead and its messages.** In staging, a **real Alebrixe lead** is read with **provenance and freshness metadata**, and its recent messages are read thread-aware.
   - **Deliberately not claimed:** the appointment and property capabilities are established and fixture-verified under (a), but the approved v1.4 DoD does **not** require them to be exercised against real hosted data, so this Slice does not claim a real appointment or a real property was operationally read. Strengthening the hosted evidence contract to cover them would be an explicit decision at the readiness/elaboration pass, not a silent addition during this migration.
+  - **Freshness, precisely.** These are *fresh operational* read capabilities by architecture — that is TD-5's and AC-1's whole point, and nothing here weakens it. What the governing sources establish per result is **provenance** ("provenance on every result", TD-5); an explicit **freshness-metadata field** is required by the approved DoD specifically of the **hosted lead read**. This Slice therefore asserts freshness metadata where its source requires it, and does not invent a per-fixture freshness field for all four capabilities.
 - **Governing behavior / traceability:**
   - **TD-5** — Operational gateway & fresh-read capabilities (hybrid target): the capability surface `legacy_lead_get_context`, `legacy_lead_get_recent_messages`, `appointment_get`, `property_get_details`; direct adapters sanctioned **only as shadow/bootstrap**; collection allowlist in code; org external-binding check before every read; provenance on every result; contract-fixture tests + drift alarms; no generic CRUD tool, ever.
   - **TD-1** — `organization_tool_secrets` with providers `traditional_gu_firestore` / `traditional_gu_mongo`; CURRENT `account_tool_secrets` untouched.
@@ -126,7 +127,7 @@ Order, dependencies and Release Scope at a glance. Detail lives in §4; technica
 
 | ID | What must be demonstrably true | Governing source | Evidence type |
 |---|---|---|---|
-| SA-1.1 | Each of the four capabilities returns a normalized result against a recorded contract fixture, carrying provenance and freshness metadata | TD-5 capability surface ("provenance on every result") | deterministic selftest |
+| SA-1.1 | Each of the four capabilities returns a normalized result against a recorded contract fixture, carrying provenance | TD-5 capability surface ("provenance on every result") | deterministic selftest |
 | SA-1.2 | A **real Alebrixe lead** is read in staging, and the result carries provenance **and** freshness metadata | TD-5; Technical Plan §9 DoD; AC-1 §6.5 | hosted verification |
 | SA-1.3 | Recent messages are **thread-aware** — Gu and `asesor_*` documents, with `source` and `delivery_status` per item | TD-5 (audit §10.1/§15.7) | deterministic selftest + hosted verification |
 | SA-1.4 | A fixture shape mismatch **fires the drift alarm** rather than silently returning wrong data | TD-5 drift alarms | deterministic selftest (injected mismatch) |
