@@ -12,3 +12,7 @@ pocs/ungga-cli/artifacts/
 # Supabase CLI scratch state (version-check cache etc.). The CLI creates this
 # inside whichever workdir it runs against — today packages/db/forward.
 **/supabase/.temp/
+# Opt-in eval artifacts. authoring-discovery.eval.ts writes to <cwd>/tmp/ only
+# when run with --write-artifacts; filenames are content hashes, so the output
+# is regenerable and never a source or fixture.
+apps/web/tmp/
