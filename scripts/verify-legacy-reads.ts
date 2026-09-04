@@ -29,7 +29,7 @@
 //     [--json evidence.json]
 
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import {
   getOrganizationById,
@@ -90,7 +90,13 @@ async function main(): Promise<void> {
   const targetArgs = parseTargetArgs(argv);
   const legacyArgs = parseLegacyArgs(argv);
   const organizationId = parseNamed(argv, "--organization");
-  const legacyLeadId = parseNamed(argv, "--lead");
+  // `--lead-file` exists because a legacy lead id embeds three phone numbers.
+  // Passing it on a command line puts personal data into shell history and
+  // terminal scrollback; reading it from a git-ignored file does not.
+  const leadFile = parseNamed(argv, "--lead-file");
+  const legacyLeadId =
+    parseNamed(argv, "--lead") ??
+    (leadFile ? readFileSync(leadFile, "utf8").trim() || undefined : undefined);
   const legacyDealId = parseNamed(argv, "--deal");
   const legacyPropertyId = parseNamed(argv, "--property");
   const jsonPath = parseNamed(argv, "--json");
@@ -98,10 +104,15 @@ async function main(): Promise<void> {
   if (!organizationId) throw new Error("--organization <uuid> is required.");
   if (!legacyLeadId) {
     throw new Error(
-      "--lead <legacy lead id> is required: SA-1.2 asks for a REAL lead, and there is no " +
-        "meaningful hosted evidence without one."
+      "--lead <legacy lead id> or --lead-file <path> is required: SA-1.2 asks for a REAL " +
+        "lead, and there is no meaningful hosted evidence without one."
     );
   }
+  // Storing the Organization's credentials is a separate step that needs the
+  // target environment's encryption key. A run may legitimately precede it -
+  // the readers here are built from the declared legacy target - but that has
+  // to be declared, not inferred from a failing check.
+  const credentialsNotYetStored = argv.includes("--credentials-not-yet-stored");
 
   const target = resolveTarget(targetArgs);
   assertBinding(target);
@@ -135,12 +146,22 @@ async function main(): Promise<void> {
     organizationId,
     provider: "traditional_gu_firestore",
   });
-  record(
-    "setup",
-    "Organization holds an active traditional_gu_firestore credential",
-    credential?.status === "active",
-    `status ${credential?.status ?? "absent"}`
-  );
+  if (credentialsNotYetStored) {
+    record(
+      "declared-incomplete",
+      "Organization-scoped credential storage is declared NOT yet configured",
+      credential?.status !== "active",
+      `status ${credential?.status ?? "absent"} - the runtime credential path is evidenced ` +
+        "deterministically instead; this run reads through the declared legacy target"
+    );
+  } else {
+    record(
+      "setup",
+      "Organization holds an active traditional_gu_firestore credential",
+      credential?.status === "active",
+      `status ${credential?.status ?? "absent"}`
+    );
+  }
 
   // The readers are built from the DECLARED legacy target rather than from the
   // stored credential, so the evidence states exactly which identity read, and
@@ -349,7 +370,9 @@ async function main(): Promise<void> {
 
   await closeLegacySourceConnections();
 
-  const required = checks.filter((check) => check.assertion !== "optional");
+  const required = checks.filter(
+    (check) => check.assertion !== "optional" && check.assertion !== "declared-incomplete"
+  );
   const failed = required.filter((check) => !check.ok);
   const report = {
     slice: "SL-1",
@@ -364,7 +387,11 @@ async function main(): Promise<void> {
     optional: checks.filter((check) => check.assertion === "optional"),
     checks,
     evidence,
+    declaredIncomplete: checks.filter((c) => c.assertion === "declared-incomplete"),
     notExercised: [
+      credentialsNotYetStored
+        ? "the Organization-scoped credential path (organization_tool_secrets) - declared not yet configured for this environment"
+        : null,
       legacyDealId ? null : "appointment_get against real hosted data",
       legacyPropertyId ? null : "property_get_details against real hosted data",
     ].filter(Boolean),
