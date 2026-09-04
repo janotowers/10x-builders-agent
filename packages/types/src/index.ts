@@ -1123,3 +1123,4 @@ export * from "./studio-qualification";
 export * from "./attachments";
 export * from "./organizations";
 export * from "./case-relationships";
+export * from "./legacy-gateway";
