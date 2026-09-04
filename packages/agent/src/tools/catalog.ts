@@ -6,6 +6,70 @@
 import type { ToolDefinition, ToolRisk } from "@agents/types";
 
 export const TOOL_CATALOG: ToolDefinition[] = [
+  // ── Traditional Gu bounded read capabilities (R1 SL-1 / TD-5) ──────
+  //
+  // Four semantic reads and nothing else. There is deliberately no
+  // "read collection" or "query legacy" tool: the capability contract is the
+  // durable interface, and the adapter behind it (direct Firestore/Mongo today,
+  // bounded legacy-side read APIs at C6) is replaceable without touching this.
+  //
+  // All four are read-only, shadow-stage, and inert unless
+  // LEGACY_GATEWAY_ENABLED is `true` AND the Organization's `relationship_ops`
+  // flag is on. Every result carries provenance; a refusal names its reason.
+  {
+    id: "legacy_lead_get_context",
+    name: "legacy_lead_get_context",
+    description:
+      "Reads the normalized Traditional Gu lead context for one legacy lead id, with provenance and freshness metadata. Read-only. The lead id is opaque - pass it whole, never parsed. Returns status='refused' with a reason when the lead does not belong to the caller's Organization, when the gateway is disabled, or when the source shape no longer matches its recorded contract.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: { legacy_lead_id: { type: "string" } },
+      required: ["legacy_lead_id"],
+    },
+  },
+  {
+    id: "legacy_lead_get_recent_messages",
+    name: "legacy_lead_get_recent_messages",
+    description:
+      "Reads recent conversation items for one legacy lead across ALL threads - the Gu-number thread and each advisor's own-WhatsApp thread - each item carrying its thread, source and delivery status. Read-only. A delivery status of 'unknown' means the source recorded none; it does NOT mean delivered.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        legacy_lead_id: { type: "string" },
+        limit: { type: "number", maximum: 200 },
+      },
+      required: ["legacy_lead_id"],
+    },
+  },
+  {
+    id: "appointment_get",
+    name: "appointment_get",
+    description:
+      "Reads a legacy deal's appointments from BOTH legacy stores and reports what each one holds. Appointment persistence is not atomic across those stores, so the result says which stores answered and retains any disagreement instead of picking a winner. Read-only. Keyed on the legacy deal id, which is the only identifier both stores share.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        legacy_deal_id: { type: "string" },
+        legacy_appointment_id: { type: "string" },
+      },
+      required: ["legacy_deal_id"],
+    },
+  },
+  {
+    id: "property_get_details",
+    name: "property_get_details",
+    description:
+      "Reads authoritative Traditional Gu property details for one legacy property id, with provenance. Read-only, and always from the authoritative property record rather than the search mirror.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: { legacy_property_id: { type: "string" } },
+      required: ["legacy_property_id"],
+    },
+  },
   {
     id: "get_user_preferences",
     name: "get_user_preferences",

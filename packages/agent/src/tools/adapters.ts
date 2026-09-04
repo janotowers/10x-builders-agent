@@ -56,6 +56,11 @@ import {
   type BigQueryRunResult,
 } from "./bigquery-adapter";
 import { readSkillReference } from "./skill-references";
+import {
+  LEGACY_GATEWAY_TOOL_IDS,
+  buildLegacyGatewayTools,
+  type LegacyGatewayDeps,
+} from "./legacy-gateway-adapters";
 import { defaultSkillsRoot } from "../skills/runtime";
 import type { ToolContext } from "./tool-context";
 import { createTrackedToolCall } from "./tool-call-audit";
@@ -683,6 +688,16 @@ function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
   }
 
   if (toolId === "bash" && process.env.BASH_TOOL_ENABLED !== "true") {
+    return false;
+  }
+
+  // R1 SL-1: the Traditional Gu read capabilities are inert unless the global
+  // kill-switch is on. The gateway checks this again internally, per read; this
+  // is the surface half, so a disabled gateway is not even offered to a model.
+  if (
+    LEGACY_GATEWAY_TOOL_IDS.includes(toolId as (typeof LEGACY_GATEWAY_TOOL_IDS)[number]) &&
+    process.env.LEGACY_GATEWAY_ENABLED !== "true"
+  ) {
     return false;
   }
 
@@ -2058,6 +2073,15 @@ export function buildLangChainTools(ctx: ToolContext) {
     });
   }
 
+  // ── Traditional Gu bounded reads (R1 SL-1 / TD-5) ──────────────────
+  tools.push(
+    ...buildLegacyGatewayTools(
+      ctx,
+      toolWiringDeps?.legacyGateway ?? null,
+      (toolId) => isToolAvailable(toolId, ctx)
+    )
+  );
+
   return tools;
 }
 
@@ -2075,6 +2099,11 @@ export interface BuildLangChainToolsDeps {
   notifyUser: import("./operational-cases-adapters").NotifyUserFn;
   sendTelegramMessage: NonNullable<RealEstateToolDeps["sendTelegramMessage"]>;
   sendGmailMessage: NonNullable<RealEstateToolDeps["sendGmailMessage"]>;
+  /**
+   * R1 SL-1 bounded legacy reads. Optional: an environment that has not wired
+   * the gateway answers `not_configured` instead of failing a turn.
+   */
+  legacyGateway?: LegacyGatewayDeps;
 }
 
 let toolWiringDeps: BuildLangChainToolsDeps | null = null;

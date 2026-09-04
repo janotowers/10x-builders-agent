@@ -5,6 +5,7 @@
   "types": "./src/index.ts",
   "scripts": {
     "type-check": "tsc --noEmit",
+    "test:legacy-gateway-tools": "tsx src/tools/legacy-gateway-adapters.selftest.ts",
     "test:github-intent": "tsx src/tools/github-intent.selftest.ts",
     "test:calendar-window": "tsx src/tools/calendar-list-window.selftest.ts",
     "test:calendar-display": "tsx src/tools/calendar-event-display.selftest.ts",

@@ -8,6 +8,14 @@
  * values (or with newer implementations during a hot reload in dev).
  */
 import { setBuildLangChainToolsDeps } from "@agents/agent";
+import { listActiveOrganizationIdsForUser } from "@agents/db";
+import {
+  isLegacyReadRefusal,
+  readLegacyDealAppointments,
+  readLegacyLeadContext,
+  readLegacyLeadRecentMessages,
+  readLegacyPropertyDetails,
+} from "@/lib/legacy-gateway";
 import { sendTelegramMessage } from "@/lib/telegram/send-message";
 import type { NotifyResult } from "@/lib/notify";
 import type { DbClient } from "@agents/db";
@@ -46,5 +54,54 @@ export function ensureAgentToolDepsWired(): void {
         body: params.body,
         documents: params.documents,
       }),
+    // R1 SL-1: the bounded Traditional Gu read capabilities. The gateway lives
+    // in apps/web because it reaches external source systems; packages/agent
+    // owns only the tool shapes. Each function below receives an explicit
+    // Organization resolved from the actor's memberships - never from a model
+    // argument.
+    legacyGateway: {
+      listActorOrganizations: ({ db, actorUserId }) =>
+        listActiveOrganizationIdsForUser(db, actorUserId),
+      readLeadContext: ({ db, organizationId, actorUserId, legacyLeadId }) =>
+        readLegacyLeadContext({ db, organizationId, actorUserId }, legacyLeadId),
+      readRecentMessages: ({
+        db,
+        organizationId,
+        actorUserId,
+        legacyLeadId,
+        limit,
+      }) =>
+        readLegacyLeadRecentMessages(
+          { db, organizationId, actorUserId },
+          legacyLeadId,
+          limit
+        ),
+      readDealAppointments: ({
+        db,
+        organizationId,
+        actorUserId,
+        legacyDealId,
+        legacyAppointmentId,
+      }) =>
+        readLegacyDealAppointments(
+          { db, organizationId, actorUserId },
+          legacyDealId,
+          legacyAppointmentId
+        ),
+      readPropertyDetails: ({
+        db,
+        organizationId,
+        actorUserId,
+        legacyPropertyId,
+      }) =>
+        readLegacyPropertyDetails(
+          { db, organizationId, actorUserId },
+          legacyPropertyId
+        ),
+      describeRefusal: (error) =>
+        isLegacyReadRefusal(error)
+          ? { reason: error.reason, detail: error.detail }
+          : null,
+    },
   });
 }
