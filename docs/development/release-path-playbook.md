@@ -97,6 +97,24 @@ This matters because `scripts/bootstrap-organization.ts` merges `apps/web/.env.l
 
 Secrets never enter tracked files, logs or command output. `.env.staging.local` is git-ignored via `.env.*.local`. Never reuse a production credential for another environment.
 
+### 4.1 Legacy source targets (R1 SL-1)
+
+A Gu OS environment and a Traditional Gu source environment are **two separate targets**, and a run declares both. `scripts/lib/legacy-target.ts` resolves the second one under the same rules.
+
+| Variable | Purpose |
+|---|---|
+| `GUOS_LEGACY_STAGE_FIRESTORE_KEY_FILE` | path to the stage read identity's service-account key |
+| `GUOS_LEGACY_PROD_FIRESTORE_KEY_FILE` | path to the production read identity's key |
+| `GUOS_LEGACY_MONGO_URI` | Atlas connection string for the read identity |
+| `GUOS_LEGACY_MONGO_DB` | database holding `appointments` (`gu2`) |
+| `GUOS_<ENV>_ENCRYPTION_KEY` | the key the declared environment's runtime decrypts with; required only when storing credentials |
+
+There is **no default legacy environment**: one of the two Firestore projects is production, and "whichever was configured" is not an acceptable answer to which project a read just touched. Pass `--legacy-env stage|prod`. The key file must bind to that environment's project or the run stops, and a production read additionally requires `--i-understand-production-read`.
+
+The Mongo variables carry no environment segment because **one Atlas cluster serves both Firestore projects**. That is the source topology, not an oversight, and it means a Mongo read is a production read whichever Firestore environment is declared.
+
+Key material is referenced **by path**, never inlined into an environment value; the key files and password files are git-ignored (`gu-os-sl1-reader.*.json`, `*.password.txt`). Because `git clean -fdx` removes ignored files, keep a copy outside the repo. Scope, containment and the retirement condition are recorded in [`../product/initiatives/relationship-operations/sl1-legacy-read-credentials.md`](../product/initiatives/relationship-operations/sl1-legacy-read-credentials.md).
+
 ## 5. Four verification layers — do not collapse them
 
 | Layer | Runs where | Answers |
@@ -117,6 +135,14 @@ Hosted and post-release verification are **additional layers**, never substitute
 | RS-3 | RS-2 + the production release path | §7 |
 
 `npm run verify:hosted -- --env staging --groups smoke,schema,security --json evidence.json` is read-only, non-destructive, and emits an evidence file. Slice-specific business assertions belong in that slice's own evidence run, not hardcoded here as universal CI.
+
+**A slice's own evidence run is the pattern, not an exception.** R1 SL-1 needed hosted evidence against a source system Gu OS does not own, which the Supabase-only harness cannot reach, so it built its own bounded target and run rather than widening this one:
+
+```bash
+npm run verify:legacy-reads -- --env-file .env.staging.local --env staging --legacy-env stage --organization <uuid> --lead <legacy lead id> --json evidence.json
+```
+
+Read-only, fail-closed on both targets, and its evidence file records shapes, counts, provenance and freshness — never message text, a phone number or an unredacted identifier, because evidence from a real environment has to be safe to attach to a PR. Credentials are stored beforehand with `npm run bootstrap:legacy-credentials` (dry-run by default).
 
 ## 6. Staging delivery
 
