@@ -27,6 +27,8 @@
     "deliver:legacy": "tsx scripts/apply-legacy-chain.ts",
     "deliver:forward": "tsx scripts/deliver-forward-migrations.ts",
     "verify:hosted": "tsx scripts/verify-hosted.ts",
+    "verify:legacy-reads": "tsx scripts/verify-legacy-reads.ts",
+    "bootstrap:legacy-credentials": "tsx scripts/bootstrap-legacy-credentials.ts",
     "preflight:schema": "tsx scripts/preflight-schema-state.ts",
     "validate:model-price-catalog": "node scripts/validate-model-price-catalog.mjs",
     "generate:model-price-catalog": "node scripts/generate-model-price-catalog.mjs",

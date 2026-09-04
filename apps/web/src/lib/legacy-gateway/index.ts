@@ -42,7 +42,18 @@ export {
   ALLOWED_SOURCE_PATHS,
   DELIBERATELY_EXCLUDED_PATHS,
 } from "./allowlist";
-export { closeLegacySourceConnections } from "./adapters";
+/**
+ * The bootstrap adapters are exported so the hosted verification run can build
+ * readers from an explicitly declared legacy target rather than from the stored
+ * credential - which is what lets the evidence state exactly which identity
+ * performed the read. Application code should use the entry points below, which
+ * resolve credentials per Organization.
+ */
+export {
+  closeLegacySourceConnections,
+  createFirestoreReader,
+  createMongoReader,
+} from "./adapters";
 export { SOURCE_CONTRACTS } from "./source-contracts";
 export type {
   LegacyFirestoreReader,
