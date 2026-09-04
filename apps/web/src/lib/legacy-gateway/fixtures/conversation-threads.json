@@ -1,0 +1,59 @@
+{
+  "recorded": {
+    "sourceSystem": "traditional_gu",
+    "store": "firestore",
+    "path": "leads/{legacyLeadId}/wsp_messeges",
+    "contractId": "firestore.wsp_messeges.v1 + firestore.wsp_messeges.item.v1",
+    "recordedAt": "2026-09-04",
+    "sampleSize": "100 thread documents / 1215 items",
+    "environment": "stage project (unggafb), through the SL-1 read identity",
+    "values": "SYNTHETIC. These documents carry real prospect conversation text; every message body, phone number and author here is invented.",
+    "notes": [
+      "Thread documents observed in the stage dataset are all Gu-number documents; the `asesor_<phone>` document below reproduces the advisor-thread shape the audit records at 9.1/10.1 and is what SA-1.3 requires the capability to model.",
+      "`message` is a string on most items and a single-element array on some - both observed.",
+      "`source`, `wamid`, `delivery_status` and `delivery_error_code` are absent from every stage item; the audit records them in the production conversation store (15.7). They are declared optional so their absence is not drift, and normalized to `unknown` rather than to `sent`."
+    ]
+  },
+  "documents": [
+    {
+      "id": "5215500000002",
+      "data": {
+        "conversation": [
+          { "author": "user", "message": "Hola, me interesa la propiedad", "time": { "_seconds": 1788800100, "_nanoseconds": 0 } },
+          { "author": "gu", "message": "Claro, con gusto te ayudo", "time": { "_seconds": 1788800160, "_nanoseconds": 0 } },
+          { "author": "user", "message": ["Sigue disponible?"], "time": { "_seconds": 1788800400, "_nanoseconds": 0 } }
+        ]
+      }
+    },
+    {
+      "id": "asesor_5215500000055",
+      "data": {
+        "conversation": [
+          {
+            "author": "asesor",
+            "message": "Te comparto la ficha por aqui",
+            "time": { "_seconds": 1788800500, "_nanoseconds": 0 },
+            "source": "advisor_wa",
+            "wamid": "wamid.SYNTHETIC0000000000000001",
+            "delivery_status": "delivered"
+          },
+          {
+            "author": "asesor",
+            "message": "Quedo al pendiente",
+            "time": { "_seconds": 1788800900, "_nanoseconds": 0 },
+            "source": "advisor_wa",
+            "wamid": "wamid.SYNTHETIC0000000000000002",
+            "delivery_status": "failed",
+            "delivery_error_code": "131047"
+          }
+        ]
+      }
+    },
+    {
+      "id": "5215500000003",
+      "data": {
+        "conversation": []
+      }
+    }
+  ]
+}

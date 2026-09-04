@@ -1,0 +1,63 @@
+{
+  "recorded": {
+    "sourceSystem": "traditional_gu",
+    "store": "firestore",
+    "path": "users/{legacyUserId}",
+    "contractId": "firestore.users.v1",
+    "recordedAt": "2026-09-04",
+    "sampleSize": 120,
+    "environment": "stage project (unggafb), through the SL-1 read identity",
+    "values": "SYNTHETIC. Recorded shape, replaced values.",
+    "notes": [
+      "`organization_id` is a DocumentReference into `users` on 112/120 documents and absent on the rest - the mixed representation the audit records at 4.2.",
+      "Read for exactly one purpose: resolving a record's legacy owner so containment can be checked. Never for user data.",
+      "The owner principal's own document points at itself, which is why a direct `legacy_organization_key` match is tried before the hop."
+    ]
+  },
+  "documents": [
+    {
+      "id": "advisor-uid-0000000000000001",
+      "data": {
+        "uid": "advisor-uid-0000000000000001",
+        "email": "advisor@example.test",
+        "role_user": "vendedor",
+        "organization_id": { "id": "owner-uid-0000000000000001", "path": "users/owner-uid-0000000000000001" }
+      }
+    },
+    {
+      "id": "owner-uid-0000000000000001",
+      "data": {
+        "uid": "owner-uid-0000000000000001",
+        "email": "owner@example.test",
+        "role_user": "super-admin",
+        "organization_id": { "id": "owner-uid-0000000000000001", "path": "users/owner-uid-0000000000000001" }
+      }
+    },
+    {
+      "id": "other-org-advisor-uid-00001",
+      "data": {
+        "uid": "other-org-advisor-uid-00001",
+        "email": "advisor@other.test",
+        "role_user": "vendedor",
+        "organization_id": { "id": "other-owner-uid-000000001", "path": "users/other-owner-uid-000000001" }
+      }
+    },
+    {
+      "id": "unbound-advisor-uid-000001",
+      "data": {
+        "uid": "unbound-advisor-uid-000001",
+        "email": "nobody@example.test",
+        "role_user": "vendedor"
+      }
+    },
+    {
+      "id": "imported-owner-uid-0000001",
+      "data": {
+        "uid": "imported-owner-uid-0000001",
+        "email": "imported@example.test",
+        "role_user": "super-admin",
+        "organization_id": "users/owner-uid-0000000000000001"
+      }
+    }
+  ]
+}

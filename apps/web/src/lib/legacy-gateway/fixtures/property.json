@@ -1,0 +1,55 @@
+{
+  "recorded": {
+    "sourceSystem": "traditional_gu",
+    "store": "firestore",
+    "path": "properties/{legacyPropertyId}",
+    "contractId": "firestore.properties.v1",
+    "recordedAt": "2026-09-04",
+    "sampleSize": 150,
+    "environment": "stage project (unggafb), through the SL-1 read identity",
+    "values": "SYNTHETIC. Recorded shape, replaced values.",
+    "notes": [
+      "`user_owner` was present on 150/150 documents - the only field that was, and the one the containment check depends on.",
+      "Descriptive fields sit between 65/150 and 146/150, so all of them are optional and normalize to null when absent.",
+      "The second document reproduces the text-path `user_owner` representation carried by part of the imported inventory; both forms normalize to the same bare uid."
+    ]
+  },
+  "documents": [
+    {
+      "id": "property-0000000000000001",
+      "data": {
+        "user_owner": { "id": "owner-uid-0000000000000001", "path": "users/owner-uid-0000000000000001" },
+        "title": "Casa en ejemplo, 3 recamaras",
+        "ad_status": "published",
+        "address": "Calle Ejemplo 100, Colonia Ejemplo",
+        "prices_types": [2500000],
+        "price_display": "$2,500,000",
+        "currency": "MXN",
+        "currency_display": "MXN",
+        "monetization_type_display": "venta",
+        "created_time": { "_seconds": 1788000000, "_nanoseconds": 0 },
+        "updated_at": { "_seconds": 1788880000, "_nanoseconds": 0 }
+      }
+    },
+    {
+      "id": "property-0000000000000002",
+      "data": {
+        "user_owner": "users/owner-uid-0000000000000001",
+        "title": "Departamento importado",
+        "ad_status": "draft",
+        "prices_types": [1750000],
+        "monetization_type_display": "venta",
+        "updated_at": { "_seconds": 1788870000, "_nanoseconds": 0 }
+      }
+    },
+    {
+      "id": "property-0000000000000003",
+      "data": {
+        "user_owner": { "id": "other-owner-uid-000000001", "path": "users/other-owner-uid-000000001" },
+        "title": "Propiedad de otra organizacion",
+        "ad_status": "published",
+        "updated_at": { "_seconds": 1788860000, "_nanoseconds": 0 }
+      }
+    }
+  ]
+}

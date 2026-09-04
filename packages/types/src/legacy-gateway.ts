@@ -202,26 +202,63 @@ export interface LegacyAppointmentStorePresence {
   mongo: boolean;
 }
 
+/** One appointment record as a single store holds it. */
 export interface LegacyAppointmentView {
-  /** Opaque legacy appointment id. */
+  /** Store-local identifier: the Firestore document id, or the Mongo `_id`. */
   legacyAppointmentId: string;
-  /** Legacy deal context the Firestore replica lives under, when known. */
+  store: LegacySourceStore;
   legacyDealId: string | null;
   legacyLeadId: string | null;
   legacyPropertyId: string | null;
-  /** Legacy status label, preserved verbatim. */
+  /** Legacy status label, preserved verbatim - never mapped to a Gu OS state. */
   status: string | null;
+  /** `date` + `hour` normalized to an instant where both parse. */
   scheduledAt: string | null;
+  rawDate: string | null;
+  rawHour: string | null;
   createdAt: string | null;
-  updatedAt: string | null;
-  presence: LegacyAppointmentStorePresence;
+  finished: boolean | null;
   /**
-   * True when both stores answered and disagree on status or schedule. The
-   * conflict is retained, never resolved by picking a winner here.
+   * Present only in the Firestore replica. Non-null means an external Calendar
+   * effect exists, which is the orphan risk audit 11.4 describes.
    */
+  googleEventId: string | null;
+}
+
+/**
+ * The two stores' records of what should be the same appointment.
+ *
+ * There is **no shared per-appointment identifier**: the Firestore replica is
+ * keyed by an auto-id (its `appointment_id` field is present on only half the
+ * documents and never equals the document id), while Mongo is keyed by
+ * `ObjectId`. Verified first-hand on 2026-09-04. Pairing therefore uses the
+ * natural key the two stores do share - deal, property, date and hour - and an
+ * unmatched record on either side is reported as exactly that.
+ *
+ * Nothing here resolves a conflict. Which store wins, and what the business
+ * consequence is, belongs to SL-8/SL-10 reconciliation, not to a read.
+ */
+export interface LegacyAppointmentPair {
+  /** Natural key the pairing used, for traceability. */
+  key: string;
+  firestore: LegacyAppointmentView | null;
+  mongo: LegacyAppointmentView | null;
+  presence: LegacyAppointmentStorePresence;
+  /** True when both stores answered and their records differ. */
   storesDisagree: boolean;
-  /** Field-level differences when `storesDisagree`, for reconciliation. */
+  /** Field-level differences, or the single-store presence note. */
   disagreements: string[];
+}
+
+export interface LegacyDealAppointments {
+  legacyDealId: string;
+  /**
+   * Which stores were actually consulted. Mongo is `false` when no Mongo
+   * credential is bound for the Organization - and a single-store answer is
+   * then explicitly incomplete rather than silently authoritative.
+   */
+  storesConsulted: LegacyAppointmentStorePresence;
+  entries: LegacyAppointmentPair[];
 }
 
 // ============================================================
