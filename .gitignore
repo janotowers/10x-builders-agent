@@ -16,3 +16,11 @@ pocs/ungga-cli/artifacts/
 # when run with --write-artifacts; filenames are content hashes, so the output
 # is regenerable and never a source or fixture.
 apps/web/tmp/
+
+# Legacy read-identity key material for the SL-1 gateway prerequisite (TD-5).
+# Private keys and passwords. Same convention as the .env files above: secrets
+# may live in the working tree so everything needed sits in one place, and are
+# kept out of history by ignoring them. Note that `git clean -fdx` removes
+# ignored files too, so keep a copy outside the repo.
+gu-os-sl1-reader.*.json
+*.password.txt
