@@ -898,7 +898,6 @@ Para loops sin caso operacional, usar el mismo principio con su correlación nat
 | Labels/taxonomía N1 | `apps/web/src/lib/tool-readiness/readiness-labels.ts`, `tool-test-behavior.ts` |
 | Flow piloto | `packages/db/supabase/migrations/00038_property_optioning_document_flow.sql` (y migraciones previas del case type) |
 | Intake split area (DB) | `packages/db/supabase/migrations/00057_property_optioning_intake_split_area.sql` |
-
 | Playbook autoría | [`authoring-playbook.md`](authoring-playbook.md) |
 | Catálogo de patrones (doc) | [`operational-case-reusable-patterns.md`](operational-case-reusable-patterns.md) |
 | Catálogo de patrones (TS) | `apps/web/src/lib/operational-cases/test-patterns-catalog.ts` |
