@@ -263,7 +263,6 @@ Present only while no Development Control Plane exists, and deliberately minimal
 | Slice | Execution Cycle | Accountable / DRI | Estimate (frozen at Ready) | Actual to evidence-ready | Human/external wait | Calendar elapsed | Re-planning events | Reopened after Done | Declared → required Release Scope | New verification capability built? |
 |---|---|---|---|---|---|---|---|---|---|---|
 | SL-0 | not recorded | not recorded | not available — predates Slice calibration model | not recorded | not recorded | not recorded | not recorded | no | RS-2 → RS-2 | yes — DB-backed cross-tenant suite (`npm run test:rls`) and its CI job |
-
 | SL-1 | Cycle 1 (2026-09-03 → 2026-09-10) | Alejandro Torres Padilla | 3–5 days / Medium *(frozen at READY, 2026-09-03)* | — | — | — | — | — | RS-2 → — | — |
 
 A Slice enters this register when the planning facts it records actually exist, not before. SL-1's Execution Cycle and confirmed Accountable / DRI were filled in by the **Cycle 1 planning decision of 2026-09-03**; its actuals stay empty until it executes. Nothing else about SL-1 belongs here: the durable contract in §4 remains the single owner of its scope, acceptance and readiness, and the execution *stage* is never transcribed here (Methodology §19.2). **SL-2…SL-13 have no register rows at all** — none of them is READY.
