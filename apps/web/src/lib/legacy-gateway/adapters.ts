@@ -16,10 +16,11 @@
  *     never enables the gateway never pulls them in, and `flags off => inert`
  *     stays true down to the module graph.
  */
-import type {
-  LegacyFirestoreReader,
-  LegacyMongoReader,
-  RawDocument,
+import {
+  APPOINTMENT_SCAN_LIMIT,
+  type LegacyFirestoreReader,
+  type LegacyMongoReader,
+  type RawDocument,
 } from "./source-clients";
 
 // Structural types for the two drivers. Declared here rather than imported so
@@ -33,8 +34,12 @@ interface FirestoreDocumentSnapshot {
 interface FirestoreQuerySnapshot {
   docs: FirestoreDocumentSnapshot[];
 }
+interface FirestoreQueryRef {
+  get(): Promise<FirestoreQuerySnapshot>;
+}
 interface FirestoreCollectionRef {
   doc(id: string): FirestoreDocumentRef;
+  limit(n: number): FirestoreQueryRef;
   get(): Promise<FirestoreQuerySnapshot>;
 }
 interface FirestoreDocumentRef {
@@ -242,10 +247,13 @@ export function createFirestoreReader(params: {
         .filter((document): document is RawDocument => document !== null);
     },
     async listDealAppointments(legacyDealId) {
+      // Bounded, and deliberately one past the bound: the capability needs to
+      // be able to tell "complete" from "there are more than we support".
       const snapshot = await (await db())
         .collection("deals")
         .doc(legacyDealId)
         .collection("appointments")
+        .limit(APPOINTMENT_SCAN_LIMIT + 1)
         .get();
       return snapshot.docs
         .map(toRawDocument)
@@ -253,8 +261,6 @@ export function createFirestoreReader(params: {
     },
   };
 }
-
-const MONGO_APPOINTMENT_SCAN_LIMIT = 200;
 
 export function createMongoReader(params: {
   organizationId: string;
@@ -267,7 +273,8 @@ export function createMongoReader(params: {
         .db(params.credentials.database)
         .collection("appointments")
         .find({ deal_id: legacyDealId })
-        .limit(MONGO_APPOINTMENT_SCAN_LIMIT)
+        // One past the bound, for the same reason as the Firestore side.
+        .limit(APPOINTMENT_SCAN_LIMIT + 1)
         .toArray();
       return documents.map((document) => ({
         id: String(document._id),

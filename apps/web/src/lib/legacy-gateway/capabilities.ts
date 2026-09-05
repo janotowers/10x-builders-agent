@@ -47,7 +47,7 @@ import {
   normalizeTimestamp,
 } from "./normalize";
 import { buildFreshness, buildProvenance, withProvenance } from "./provenance";
-import type { LegacySourceReaders } from "./source-clients";
+import { APPOINTMENT_SCAN_LIMIT, type LegacySourceReaders } from "./source-clients";
 import {
   CONVERSATION_ITEM_CONTRACT,
   CONVERSATION_THREAD_CONTRACT,
@@ -444,6 +444,18 @@ function comparePair(
  * only identifier the two stores share - established first-hand, not assumed.
  * A single appointment is selected with `legacyAppointmentId`, which matches
  * whichever store holds that id.
+ *
+ * **It returns every record both stores hold for the deal, or it refuses.** Two
+ * things could otherwise make that claim false, and both are refusals rather
+ * than silent behaviour:
+ *
+ *   * more records than the bounded read supports (`result_too_large`), because
+ *     a truncated set presented as complete is exactly what a bound must not
+ *     produce;
+ *   * two records from the same store sharing a pairing key
+ *     (`pairing_ambiguous`), because no source invariant makes property + date
+ *     + hour unique within a store, and choosing between them would discard a
+ *     real record.
  */
 export async function appointmentGet(
   input: CapabilityInput & { legacyDealId: string; legacyAppointmentId?: string }
@@ -484,6 +496,25 @@ export async function appointmentGet(
 
   if (firestoreDocuments.length === 0 && mongoDocuments.length === 0) {
     throw new LegacyReadRefusal("not_found", capability, legacyDealId);
+  }
+
+  // Both readers fetch one past the bound, so more than the bound means the
+  // source has more than this capability can answer for. Checked before
+  // anything else is validated or normalized: there is no point contract-
+  // checking a set that will be refused, and a truncated set could hide a
+  // duplicate that the pairing check below exists to catch.
+  for (const [store, documents] of [
+    ["firestore", firestoreDocuments],
+    ["mongo", mongoDocuments],
+  ] as const) {
+    if (documents.length > APPOINTMENT_SCAN_LIMIT) {
+      throw new LegacyReadRefusal(
+        "result_too_large",
+        capability,
+        legacyDealId,
+        `${store} returned more than ${APPOINTMENT_SCAN_LIMIT} appointment records for this deal`
+      );
+    }
   }
 
   // Contract-check both stores before anything is normalized or compared.
@@ -570,6 +601,29 @@ export async function appointmentGet(
     firestoreAppointmentView(legacyDealId, document)
   );
   const mongoViews = mongoDocuments.map(mongoAppointmentView);
+
+  // Pairing across stores is only defensible when each store contributes at
+  // most one record per key. Nothing in either source enforces that, so it is
+  // proven here rather than assumed - otherwise `pair.firestore = view` would
+  // overwrite an earlier record and drop it without a trace.
+  for (const [store, views] of [
+    ["firestore", firestoreViews],
+    ["mongo", mongoViews],
+  ] as const) {
+    const seen = new Set<string>();
+    for (const view of views) {
+      const key = pairingKey(view);
+      if (seen.has(key)) {
+        throw new LegacyReadRefusal(
+          "pairing_ambiguous",
+          capability,
+          legacyDealId,
+          `two ${store} records share the pairing key property|date|hour, so no one-to-one cross-store match exists`
+        );
+      }
+      seen.add(key);
+    }
+  }
 
   const byKey = new Map<string, LegacyAppointmentPair>();
   const ensure = (key: string): LegacyAppointmentPair => {

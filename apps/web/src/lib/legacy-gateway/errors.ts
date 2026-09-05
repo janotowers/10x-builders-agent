@@ -37,6 +37,23 @@ export type LegacyReadRefusalReason =
   | "not_found"
   /** A source document no longer matches its recorded contract fixture. */
   | "contract_drift"
+  /**
+   * Two records from the SAME store share a pairing key, so no defensible
+   * one-to-one cross-store match exists.
+   *
+   * Nothing in either source enforces uniqueness of property + date + hour
+   * within a store, and audit 11.3's retry-tolerant partial persistence is a
+   * plausible way to produce two. Picking one would silently discard a real
+   * source record, so the read refuses instead.
+   */
+  | "pairing_ambiguous"
+  /**
+   * The source returned more records than this capability's bounded read
+   * supports. Refused rather than answered from a truncated set, because a
+   * partial answer presented as complete is the failure mode a bound is
+   * supposed to prevent.
+   */
+  | "result_too_large"
   /** The source could not be reached. Transient by nature; never cached as absence. */
   | "source_unavailable";
 

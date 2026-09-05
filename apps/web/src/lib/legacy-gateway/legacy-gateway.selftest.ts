@@ -35,6 +35,7 @@ import {
 } from "./allowlist";
 import { assertAllowedSourcePath, resolveSourcePath } from "./allowlist";
 import { withRotationAwareCache, type CacheEntry } from "./adapters";
+import { APPOINTMENT_SCAN_LIMIT } from "./source-clients";
 import {
   appointmentGet,
   legacyLeadGetContext,
@@ -1030,6 +1031,153 @@ async function testAppointmentOwnershipIsUniform(): Promise<void> {
   console.log("  ok  appointments refuse unless every record shares one contained owner");
 }
 
+// ============================================================
+// No appointment record may be silently dropped or truncated
+// ============================================================
+
+async function testAppointmentsNeverSilentlyDropRecords(): Promise<void> {
+  // Every record that goes in comes out. Nothing in either source enforces
+  // uniqueness of the pairing key, so the success case is asserted by counting
+  // rather than by trusting the fixture's shape.
+  const complete = await appointmentGet({
+    ctx: pilotContext(),
+    readers: fixtureReaders(),
+    legacyDealId: appointmentFixture.legacyDealId,
+    env: GATEWAY_ON,
+  });
+  const returnedFirestore = complete.value.entries.filter((e) => e.firestore).length;
+  const returnedMongo = complete.value.entries.filter((e) => e.mongo).length;
+  assert.equal(
+    returnedFirestore,
+    appointmentFixture.firestore.length,
+    "every Firestore record must appear in the result"
+  );
+  assert.equal(
+    returnedMongo,
+    appointmentFixture.mongo.length,
+    "every Mongo record must appear in the result"
+  );
+
+  // Two FIRESTORE records sharing property + date + hour. Before the repair the
+  // second overwrote the first and one real record vanished.
+  const firestoreDuplicate = await expectRefusal(
+    () =>
+      appointmentGet({
+        ctx: pilotContext(),
+        readers: fixtureReaders((documents) => {
+          const [first, second] = documents.firestoreAppointments;
+          second.data.property_ref = first.data.property_ref;
+          second.data.date = first.data.date;
+          second.data.hour = first.data.hour;
+        }),
+        legacyDealId: appointmentFixture.legacyDealId,
+        env: GATEWAY_ON,
+      }),
+    "pairing_ambiguous"
+  );
+  assert.match(firestoreDuplicate.message, /two firestore records/);
+
+  // The same on the MONGO side.
+  const mongoDuplicate = await expectRefusal(
+    () =>
+      appointmentGet({
+        ctx: pilotContext(),
+        readers: fixtureReaders((documents) => {
+          const [first, second] = documents.mongoAppointments;
+          second.data.property_id = first.data.property_id;
+          second.data.date = first.data.date;
+          second.data.hour = first.data.hour;
+        }),
+        legacyDealId: appointmentFixture.legacyDealId,
+        env: GATEWAY_ON,
+      }),
+    "pairing_ambiguous"
+  );
+  assert.match(mongoDuplicate.message, /two mongo records/);
+
+  // A key shared ACROSS stores is the normal case - that is what pairing is
+  // for - and must not be mistaken for ambiguity.
+  assert.ok(
+    complete.value.entries.some((entry) => entry.presence.firestore && entry.presence.mongo),
+    "a cross-store pair must still pair"
+  );
+
+  console.log("  ok  a same-store duplicate pairing key refuses instead of dropping a record");
+}
+
+async function testAppointmentsRefuseOnOverflow(): Promise<void> {
+  // The readers fetch one past the bound; more than the bound means the source
+  // holds more than this capability can answer for.
+  const overflow = (side: "firestoreAppointments" | "mongoAppointments") =>
+    fixtureReaders((documents) => {
+      const template = documents[side][0];
+      documents[side] = Array.from(
+        { length: APPOINTMENT_SCAN_LIMIT + 1 },
+        (_unused, index) => {
+          const copy = structuredClone(template);
+          copy.id = `${template.id}-${index}`;
+          // A distinct property per record, so every pairing key is unique and
+          // this exercises the bound rather than the duplicate guard.
+          if (side === "mongoAppointments") {
+            copy.data._id = copy.id;
+            copy.data.property_id = `property-${index}`;
+          } else {
+            copy.data.property_ref = {
+              id: `property-${index}`,
+              path: `properties/property-${index}`,
+            };
+          }
+          return copy;
+        }
+      );
+    });
+
+  for (const side of ["firestoreAppointments", "mongoAppointments"] as const) {
+    const refusal = await expectRefusal(
+      () =>
+        appointmentGet({
+          ctx: pilotContext(),
+          readers: overflow(side),
+          legacyDealId: appointmentFixture.legacyDealId,
+          env: GATEWAY_ON,
+        }),
+      "result_too_large"
+    );
+    assert.match(refusal.message, new RegExp(String(APPOINTMENT_SCAN_LIMIT)));
+  }
+
+  // Exactly at the bound is complete, not an overflow - the boundary is
+  // inclusive and every record is returned.
+  const atLimit = await appointmentGet({
+    ctx: pilotContext(),
+    readers: fixtureReaders((documents) => {
+      const template = documents.firestoreAppointments[0];
+      documents.firestoreAppointments = Array.from(
+        { length: APPOINTMENT_SCAN_LIMIT },
+        (_unused, index) => {
+          const copy = structuredClone(template);
+          copy.id = `${template.id}-${index}`;
+          copy.data.property_ref = {
+            id: `property-${index}`,
+            path: `properties/property-${index}`,
+          };
+          return copy;
+        }
+      );
+      documents.mongoAppointments = [];
+    }),
+    legacyDealId: appointmentFixture.legacyDealId,
+    env: GATEWAY_ON,
+  });
+  assert.equal(
+    atLimit.value.entries.filter((entry) => entry.firestore).length,
+    APPOINTMENT_SCAN_LIMIT,
+    "a result exactly at the bound must be returned in full"
+  );
+
+  console.log("  ok  a source result past the bounded read refuses instead of truncating");
+}
+
 async function main(): Promise<void> {
   console.log("legacy gateway selftest");
   await testLeadContext();
@@ -1039,6 +1187,8 @@ async function main(): Promise<void> {
   await testDriftAlarm();
   await testBindingGate();
   await testAppointmentOwnershipIsUniform();
+  await testAppointmentsNeverSilentlyDropRecords();
+  await testAppointmentsRefuseOnOverflow();
   await testCredentialRotationInvalidatesCache();
   await testFlagsOffIsInert();
   testNoGenericCrudSurface();
