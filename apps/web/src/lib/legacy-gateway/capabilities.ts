@@ -445,9 +445,9 @@ function comparePair(
  * A single appointment is selected with `legacyAppointmentId`, which matches
  * whichever store holds that id.
  *
- * **It returns every record both stores hold for the deal, or it refuses.** Two
- * things could otherwise make that claim false, and both are refusals rather
- * than silent behaviour:
+ * **It returns every record from every store it actually consults, up to the
+ * bounded limit, or it refuses.** Two things could otherwise make that claim
+ * false, and both are refusals rather than silent behaviour:
  *
  *   * more records than the bounded read supports (`result_too_large`), because
  *     a truncated set presented as complete is exactly what a bound must not
@@ -456,6 +456,11 @@ function comparePair(
  *     (`pairing_ambiguous`), because no source invariant makes property + date
  *     + hour unique within a store, and choosing between them would discard a
  *     real record.
+ *
+ * Note the scope of that promise: it is about the stores actually consulted.
+ * When no Mongo credential is bound the capability still answers, and says so —
+ * `storesConsulted.mongo = false`. It cannot know what Mongo holds, so it never
+ * presents a single-store answer as complete across both.
  */
 export async function appointmentGet(
   input: CapabilityInput & { legacyDealId: string; legacyAppointmentId?: string }
@@ -555,8 +560,8 @@ export async function appointmentGet(
 
   // Containment for a MULTI-RECORD result.
   //
-  // This capability returns every appointment on a deal, so containing the
-  // first record and returning the rest would leak another Organization's rows
+  // This capability returns every appointment it read for a deal, so containing
+  // the first record and returning the rest would leak another Organization's rows
   // the moment a deal ever carried mixed ownership. Nothing in the source
   // guarantees it cannot: `user_owner` is a per-record field, not a property of
   // the deal. So the contract is stronger and stated as a proof obligation -
