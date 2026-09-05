@@ -1,29 +1,39 @@
-# {{Initiative}} — Slice Plan
+# {{Slice Plan name}} — Slice Plan
 
 > **Version:** v0.1  
 > **Status:** Draft  
 > **Owner:** {{engineering owner}}  
-> **Initiative:** {{initiative name + link}}  
+> **Roadmap Increment:** {{link, when this plan realizes one — and where its declared graduation evidence lives; otherwise omit this line}}  
+> **Product Area / Responsibility:** {{link, where the product uses that concept; otherwise omit this line}}  
+> **Initiative:** {{link only when a bounded Initiative is genuinely the coordinated delivery unit; otherwise omit this line}}  
 > **Governing Specs:** {{links to the approved Feature / Business Specs}}  
 > **Architecture / ADRs:** {{links}}  
 > **Technical Plan:** {{link}}  
 > **Development method:** {{Methodology link}}  
-> **Intended repo path:** `{{initiative directory}}/slice-plan.md`  
-> **Artifact role:** Owns the durable Slice contracts for this initiative and their order. It does **not** own intended behavior (the Specs do), technical design (the Technical Plan does), pre-PR execution state and implementation Tasks (the agent runtime does), or recorded execution state — branch, commits, PR, CI, merge, Actions, environment approvals (GitHub does).
+> **Intended repo path:** `{{directory}}/slice-plan.md`  
+> **Artifact role:** Owns the durable Slice contracts this plan covers and their order. For roadmap-driven product work it normally realizes **one Roadmap Increment**; where a bounded Initiative is genuinely the coordinated delivery unit it may serve that Initiative instead. It does **not** own intended behavior (the Specs do), consequential structure (the Architecture Analysis / ADRs do), technical design (the Technical Plan does), strategic sequencing and graduation evidence (the Roadmap does), pre-PR execution state and implementation Tasks (the agent runtime does), or recorded execution state — branch, commits, PR, CI, merge, Actions, environment approvals (GitHub does).
 
-Authoring guidance lives in [`README.md`](README.md); the governing rules are Methodology §10–§10.4, §12.1–§12.2, §14.2 and §19.1–§19.2. Remove sections that are genuinely irrelevant rather than filling them with boilerplate.
+Authoring guidance lives in [`README.md`](README.md); the governing rules are Methodology §4.1, §10–§10.5, §12.1–§12.4, §14.2, §18 and §19.1–§19.2. Remove sections — and header lines — that are genuinely irrelevant rather than filling them with boilerplate.
+
+**Default: a Slice Plan integrates the Slices required to realize one Roadmap Increment.** A genuinely bounded Initiative used as the coordinated delivery unit may justify its own plan instead. Proportional non-roadmap work that nonetheless warrants Slice treatment under Methodology §18 — an architecture/platform change, a significant repair, operational infrastructure — **must not invent a Roadmap Increment or an Initiative merely to fill a header line here**; omit the line that does not apply and name the artifact that actually governs the work.
+
+Do **not** create a separate Slice Plan per Spec, per ADR, per Architecture Analysis or per Technical Plan. Those artifacts govern individual Slices through traceability; dependencies, priority, the READY Horizon and Cycle planning all need one integrated view (Methodology §10.1). This template requires no particular filesystem hierarchy.
 
 ## 1. How to read this plan
 
-- The **Spec** owns intended behavior. A Slice owns a bounded increment that proves part of it, or a required enabling capability.
+- The **Spec** owns intended behavior. A Slice proves part of one or more governing Specs, **or** establishes a required enabling / operational contract governed by an ADR, architecture source, Technical Plan, invariant or prerequisite capability. Do not invent a Spec to give enabling work something to point at.
 - Slice contracts are written **rolling wave**: near-term Slices in full, later Slices as stubs carrying enough to sequence, size and prioritize them.
-- **Tasks are not written here.** They are derived by the coding agent once a Slice is Ready, Planned and Executable.
+- **Near-term work maintains the READY Horizon** (Methodology §10.5): enough elaborated READY work to avoid stalling between Slices or Cycles — roughly one to two Cycles of plausible capacity as an operating default. The horizon is **capacity-based, not a fixed Slice count**, and maintaining it is the development system's own proactive work, not something a human should have to request.
+- **Readiness elaboration never invents unresolved product or architecture decisions**, and never lowers the Definition of Ready to widen the horizon. When a Slice cannot legitimately become READY, name the owning artifact and the smallest precise decision needed rather than leaving it a passive dead end.
+- **Only READY Slices are eligible for Execution Cycle planning** (Methodology §10.2, §12.1). Readiness is an attribute of the Slice, not an approval and not a stage.
+- **Tasks are not written here.** They are derived by the coding agent once a Slice is Ready, Planned and Executable, and they never become durable Markdown truth.
 - **Readiness lives here; execution stage does not.** A Slice can be READY with nobody assigned; the Accountable / DRI is confirmed at planning time and recorded in §5.
+- **Every Slice being Done is not the same claim as the Roadmap Increment graduating** (Methodology §17.2). This plan closes Slices; the Roadmap owns graduation evidence.
 - Nothing in this document is a live status board. See §5.
 
 ## 2. Shared baseline
 
-State once what every Slice in this initiative inherits, so individual contracts record only their delta.
+State once what every Slice in this plan inherits, so individual contracts record only their delta.
 
 - **Baseline Definition of Done:** {{e.g. type-check / lint / validators green; module selftests wired and green; flags off ⇒ inert; documentation synchronization note}}
 - **Baseline evidence commands:** {{the specific repo scripts}}
@@ -106,3 +116,7 @@ One short entry per completed Slice. State the environment reached, the Release 
 | Version | Date | Change |
 |---|---|---|
 | v0.1 | {{date}} | Initial Slice Plan. |
+
+---
+
+*Template aligned to Methodology v0.4.0.*
