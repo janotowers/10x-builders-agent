@@ -1,0 +1,92 @@
+{
+  "recorded": {
+    "sourceSystem": "traditional_gu",
+    "recordedAt": "2026-09-04",
+    "environment": "stage Firestore project (unggafb) and the delivered Atlas read identity",
+    "values": "SYNTHETIC. Recorded shapes, replaced values.",
+    "firestore": {
+      "store": "firestore",
+      "path": "deals/{legacyDealId}/appointments",
+      "contractId": "firestore.deal_appointments.v1",
+      "sampleSize": "126 appointments across 200 deals"
+    },
+    "mongo": {
+      "store": "mongo",
+      "path": "gu2.appointments",
+      "contractId": "mongo.gu2.appointments.v1",
+      "sampleSize": "50 documents of ~9,379"
+    },
+    "notes": [
+      "The two stores share NO per-appointment identifier. The Firestore document id is a 20-character auto-id; the `appointment_id` field is present on 63/126 documents and never equalled the document id in the sample. Mongo is keyed by ObjectId. Pairing therefore uses property + date + hour.",
+      "The Mongo collection lives in `gu2`, the guv3 runtime database. `bot` has no `appointments` collection at all - verified first-hand on 2026-09-04.",
+      "`created_time` is a Firestore Timestamp on one side and a string on the other; both normalize to the same instant.",
+      "The pairs below reproduce the three outcomes audit 11.3 says the legacy flow tolerates: both stores agreeing, both stores disagreeing on status, and a record present in only one store."
+    ]
+  },
+  "legacyDealId": "deal-0000000000000000000001",
+  "firestore": [
+    {
+      "id": "fsApptAutoId000000001",
+      "data": {
+        "status": "Proxima",
+        "date": "2026-09-10",
+        "hour": "16:00",
+        "created_time": { "_seconds": 1788880000, "_nanoseconds": 0 },
+        "title": "Visita programada",
+        "lead_ref": { "id": "5215500000001521550000000252155000000003", "path": "leads/5215500000001521550000000252155000000003" },
+        "property_ref": { "id": "property-0000000000000001", "path": "properties/property-0000000000000001" },
+        "user_owner": { "id": "owner-uid-0000000000000001", "path": "users/owner-uid-0000000000000001" },
+        "appointment_id": "11111111-2222-3333-4444-555555555555",
+        "google_event_id": "synthetic-calendar-event-1"
+      }
+    },
+    {
+      "id": "fsApptAutoId000000002",
+      "data": {
+        "status": "Proxima",
+        "date": "2026-09-12",
+        "hour": "11:30",
+        "created_time": { "_seconds": 1788881000, "_nanoseconds": 0 },
+        "title": "Visita programada",
+        "lead_ref": { "id": "5215500000001521550000000252155000000003", "path": "leads/5215500000001521550000000252155000000003" },
+        "property_ref": { "id": "property-0000000000000002", "path": "properties/property-0000000000000002" },
+        "user_owner": { "id": "owner-uid-0000000000000001", "path": "users/owner-uid-0000000000000001" },
+        "google_event_id": null
+      }
+    }
+  ],
+  "mongo": [
+    {
+      "id": "6650000000000000000000a1",
+      "data": {
+        "_id": "6650000000000000000000a1",
+        "status": "Cancelada",
+        "date": "2026-09-10",
+        "hour": "16:00",
+        "created_time": "2026-09-04 12:00:00",
+        "deal_id": "deal-0000000000000000000001",
+        "lead_id": "5215500000001521550000000252155000000003",
+        "property_id": "property-0000000000000001",
+        "user_owner": "owner-uid-0000000000000001",
+        "title": "Visita programada",
+        "finished": false
+      }
+    },
+    {
+      "id": "6650000000000000000000a2",
+      "data": {
+        "_id": "6650000000000000000000a2",
+        "status": "Proxima",
+        "date": "2026-09-15",
+        "hour": "09:00",
+        "created_time": "2026-09-04 12:05:00",
+        "deal_id": "deal-0000000000000000000001",
+        "lead_id": "5215500000001521550000000252155000000003",
+        "property_id": "property-0000000000000003",
+        "user_owner": "owner-uid-0000000000000001",
+        "title": "Visita solo en mongo",
+        "finished": false
+      }
+    }
+  ]
+}

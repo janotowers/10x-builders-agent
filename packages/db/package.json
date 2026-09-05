@@ -17,6 +17,7 @@
     "test:durable-tasks": "tsx src/queries/durable-tasks.selftest.ts",
     "test:attachments": "tsx src/queries/attachments.selftest.ts",
     "test:organizations": "tsx src/queries/organizations.selftest.ts",
+    "test:organization-tool-secrets": "tsx src/queries/organization-tool-secrets.selftest.ts",
     "test:rls": "tsx test-rls/run.ts"
   },
   "dependencies": {

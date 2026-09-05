@@ -163,3 +163,34 @@ export async function attachExternalIdentityBinding(
     externalId,
   });
 }
+
+/**
+ * Every binding of one kind held by an Organization.
+ *
+ * Added for the SL-1 gateway's pre-read gate: before any legacy source is
+ * touched, the gateway must establish that the calling Organization is bound to
+ * that source system at all. That question is asked Organization-first, so it
+ * cannot be answered by `findBindingInOrganization`, which needs the external id
+ * up front.
+ *
+ * Organization-scoped by construction, and never an authority grant: it tells
+ * you which external identities an Organization owns, not what may be done with
+ * them.
+ */
+export async function listOrganizationBindingsOfKind(
+  db: DbClient,
+  params: {
+    organizationId: string;
+    sourceSystem: ExternalSourceSystem;
+    bindingKind: ExternalBindingKind;
+  }
+): Promise<ExternalIdentityBinding[]> {
+  const { data, error } = await db
+    .from("external_identity_bindings")
+    .select("*")
+    .eq("organization_id", params.organizationId)
+    .eq("source_system", params.sourceSystem)
+    .eq("binding_kind", params.bindingKind);
+  if (error) throw error;
+  return (data ?? []) as ExternalIdentityBinding[];
+}

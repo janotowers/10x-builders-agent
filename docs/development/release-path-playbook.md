@@ -97,6 +97,31 @@ This matters because `scripts/bootstrap-organization.ts` merges `apps/web/.env.l
 
 Secrets never enter tracked files, logs or command output. `.env.staging.local` is git-ignored via `.env.*.local`. Never reuse a production credential for another environment.
 
+**What may appear in committed evidence.** Three tiers, and the middle one is the easy mistake:
+
+- **Explicitly public configuration identifiers** — the project ref, the environment URL, the publishable key, a legacy project id, a read-identity email — **may be recorded literally** when the evidence needs them. They identify which environment was reached, and hiding them makes evidence harder to audit for no security gain.
+- **Tenant primary keys and internal infrastructure identifiers** — Organization uuids, database cluster hostnames — **should normally be digested or redacted**, unless the literal value is necessary to reproduce or interpret the evidence, or is already explicitly classified public above. A stable digest still proves identity and consistency across artifacts, which is usually the whole point.
+- **Credential material** is never committed, in any form.
+
+### 4.1 Legacy source targets (R1 SL-1)
+
+A Gu OS environment and a Traditional Gu source environment are **two separate targets**, and a run declares both. `scripts/lib/legacy-target.ts` resolves the second one under the same rules.
+
+| Variable | Purpose |
+|---|---|
+| `GUOS_LEGACY_STAGE_FIRESTORE_KEY_FILE` | path to the stage read identity's service-account key |
+| `GUOS_LEGACY_PROD_FIRESTORE_KEY_FILE` | path to the production read identity's key |
+| `GUOS_LEGACY_MONGO_URI` | Atlas connection string for the read identity |
+| `GUOS_LEGACY_MONGO_DB` | database holding `appointments` (`gu2`) |
+| `GUOS_LEGACY_MONGO_URI_DIRECT` | optional seedlist form, used **only** for the connection check on machines whose resolver cannot look up `mongodb+srv`; never stored |
+| `GUOS_<ENV>_ENCRYPTION_KEY` | the key the declared environment's runtime decrypts with; required only when storing credentials |
+
+There is **no default legacy environment**: one of the two Firestore projects is production, and "whichever was configured" is not an acceptable answer to which project a read just touched. Pass `--legacy-env stage|prod`. The key file must bind to that environment's project or the run stops, and a production read additionally requires `--i-understand-production-read`.
+
+The Mongo variables carry no environment segment because **one Atlas cluster serves both Firestore projects**. That is the source topology, not an oversight, and it means a Mongo read is a production read whichever Firestore environment is declared.
+
+Key material is referenced **by path**, never inlined into an environment value; the key files and password files are git-ignored (`gu-os-sl1-reader.*.json`, `*.password.txt`). Because `git clean -fdx` removes ignored files, keep a copy outside the repo. Scope, containment and the retirement condition are recorded in [`../product/initiatives/relationship-operations/sl1-legacy-read-credentials.md`](../product/initiatives/relationship-operations/sl1-legacy-read-credentials.md).
+
 ## 5. Four verification layers — do not collapse them
 
 | Layer | Runs where | Answers |
@@ -117,6 +142,14 @@ Hosted and post-release verification are **additional layers**, never substitute
 | RS-3 | RS-2 + the production release path | §7 |
 
 `npm run verify:hosted -- --env staging --groups smoke,schema,security --json evidence.json` is read-only, non-destructive, and emits an evidence file. Slice-specific business assertions belong in that slice's own evidence run, not hardcoded here as universal CI.
+
+**A slice's own evidence run is the pattern, not an exception.** R1 SL-1 needed hosted evidence against a source system Gu OS does not own, which the Supabase-only harness cannot reach, so it built its own bounded target and run rather than widening this one:
+
+```bash
+npm run verify:legacy-reads -- --env-file .env.staging.local --env staging --legacy-env stage --organization <uuid> --lead <legacy lead id> --json evidence.json
+```
+
+Read-only, fail-closed on both targets, and its evidence file records shapes, counts, provenance and freshness — never message text, a phone number or an unredacted identifier, because evidence from a real environment has to be safe to attach to a PR. Credentials are stored beforehand with `npm run bootstrap:legacy-credentials` (dry-run by default).
 
 ## 6. Staging delivery
 
@@ -175,11 +208,14 @@ This path runs **only for RS-3 slices**. A slice that declared RS-1 or RS-2 does
 | `GUOS_STAGING_SUPABASE_PUBLISHABLE_KEY` | **variable** | that environment | Publishable by design — not a secret |
 | `GUOS_STAGING_SUPABASE_DATABASE_URL` | **secret** | that environment | Embeds the database password |
 | Branch protection on `main` | protection rule | Settings → Branches | Repository setting; also what makes the frozen-era bypass auditable |
+| `ENCRYPTION_KEY` for `staging` | **secret** | that environment | Application-level encryption key for `account_tool_secrets` / `organization_tool_secrets`. Must be the *same* 64-hex value as `GUOS_STAGING_ENCRYPTION_KEY` locally, or material stored by a script cannot be decrypted by a runtime |
 | A production environment | — | not yet | Deliberately absent until Gate B is authorized |
 
 Classifying public identifiers as secrets is not free: it makes them unreadable in logs and harder to debug for no security gain. Only the connection string is a secret here.
 
 Until the `staging` environment and its configuration exist, the delivery workflow fails closed. That is the intended behavior: document the control rather than weaken it.
+
+**There is currently no deployed Gu OS application runtime in staging.** "Staging" here means a hosted Supabase environment plus this GitHub Environment; neither workflow deploys the Next.js app. Two consequences worth keeping straight: a verification script executes the application code **in the operator's process**, not in a hosted runtime; and configuring `ENCRYPTION_KEY` as a `staging` environment secret does **not** by itself mean a runtime exists to consume it. When one is deployed, it must receive that same canonical value — otherwise it will fail to decrypt everything stored before it existed.
 
 **Reviewer policy.** Required reviewers on `staging` are an intentionally conservative starting point for v1. They can be relaxed later if evidence supports autonomous staging delivery — that is a governed decision, not a default. **Production release authority remains explicitly human-gated regardless**, and no amount of staging evidence changes that.
 

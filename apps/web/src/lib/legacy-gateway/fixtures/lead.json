@@ -1,0 +1,66 @@
+{
+  "recorded": {
+    "sourceSystem": "traditional_gu",
+    "store": "firestore",
+    "path": "leads/{legacyLeadId}",
+    "contractId": "firestore.leads.v1",
+    "recordedAt": "2026-09-04",
+    "sampleSize": 150,
+    "environment": "stage project (unggafb), through the SL-1 read identity",
+    "values": "SYNTHETIC. Field names, types and representations are recorded from the live store; every value is replaced. These documents carry prospect phone numbers, so real values must never enter the repository.",
+    "notes": [
+      "`Asesor` is a DocumentReference into `users` on 147/150 documents - the first hop of the Organization containment chain.",
+      "Timestamps are recorded in their serialized form (`_seconds`/`_nanoseconds`), which is how a Firestore Timestamp survives JSON.",
+      "The document id is the composite operational-context key (audit 5.1) and is used opaquely."
+    ]
+  },
+  "documents": [
+    {
+      "id": "5215500000001521550000000252155000000003",
+      "data": {
+        "Asesor": { "id": "advisor-uid-0000000000000001", "path": "users/advisor-uid-0000000000000001" },
+        "assigned": true,
+        "assignment_type": "manual",
+        "client_type": "comprador",
+        "created_time": { "_seconds": 1788800000, "_nanoseconds": 0 },
+        "edited_time": { "_seconds": 1788886400, "_nanoseconds": 0 },
+        "etapa": "primer_contacto",
+        "new_assignment": false,
+        "phone_number": "5215500000001",
+        "source": "portal"
+      }
+    },
+    {
+      "id": "5215500000009521550000000252155000000003",
+      "data": {
+        "Asesor": { "id": "advisor-uid-0000000000000001", "path": "users/advisor-uid-0000000000000001" },
+        "client_type": "arrendatario",
+        "created_time": { "_seconds": 1788700000, "_nanoseconds": 0 },
+        "edited_time": { "_seconds": 1788700500, "_nanoseconds": 0 },
+        "etapa": "primer_contacto",
+        "phone_number": "5215500000009"
+      }
+    },
+    {
+      "id": "5215500000077521550000000252155000000099",
+      "data": {
+        "Asesor": { "id": "other-org-advisor-uid-00001", "path": "users/other-org-advisor-uid-00001" },
+        "client_type": "comprador",
+        "created_time": { "_seconds": 1788600000, "_nanoseconds": 0 },
+        "edited_time": { "_seconds": 1788600900, "_nanoseconds": 0 },
+        "etapa": "primer_contacto",
+        "phone_number": "5215500000077"
+      }
+    },
+    {
+      "id": "5215500000088521550000000252155000000003",
+      "data": {
+        "client_type": "comprador",
+        "created_time": { "_seconds": 1788500000, "_nanoseconds": 0 },
+        "edited_time": { "_seconds": 1788500600, "_nanoseconds": 0 },
+        "etapa": "primer_contacto",
+        "phone_number": "5215500000088"
+      }
+    }
+  ]
+}

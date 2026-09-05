@@ -122,6 +122,12 @@ export {
   getBuildLangChainToolsDeps,
   type BuildLangChainToolsDeps,
 } from "./tools/adapters";
+export {
+  LEGACY_GATEWAY_TOOL_IDS,
+  resolveToolOrganization,
+  type LegacyGatewayDeps,
+  type LegacyGatewayToolResult,
+} from "./tools/legacy-gateway-adapters";
 export type { ToolContext } from "./tools/tool-context";
 export {
   buildRuntimeAttachmentEvidenceBlock,
