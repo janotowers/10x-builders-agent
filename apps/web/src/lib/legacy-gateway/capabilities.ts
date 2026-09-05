@@ -522,16 +522,47 @@ export async function appointmentGet(
     }
   }
 
-  // Containment, from whichever store answered. Every appointment record in
-  // both stores carries `user_owner` on 100% of the observed sample, so there
-  // is always something to contain against.
-  const ownerReference =
-    firestoreDocuments[0]?.data.user_owner ?? mongoDocuments[0]?.data.user_owner;
+  // Containment for a MULTI-RECORD result.
+  //
+  // This capability returns every appointment on a deal, so containing the
+  // first record and returning the rest would leak another Organization's rows
+  // the moment a deal ever carried mixed ownership. Nothing in the source
+  // guarantees it cannot: `user_owner` is a per-record field, not a property of
+  // the deal. So the contract is stronger and stated as a proof obligation -
+  // **every returned record must carry one identical, resolvable owner, and
+  // that owner must contain to the calling Organization**, or nothing is
+  // returned at all.
+  const ownerReferences = [...firestoreDocuments, ...mongoDocuments].map(
+    (document) => document.data.user_owner
+  );
+  const ownerIds = new Set<string>();
+  for (const reference of ownerReferences) {
+    const normalized = normalizeReference(reference);
+    if (!normalized.id) {
+      // A record whose owner cannot be established cannot be proven contained,
+      // and a partial answer is not an option here.
+      throw new LegacyReadRefusal(
+        "ownership_not_uniform",
+        capability,
+        legacyDealId,
+        "an appointment record carries no resolvable owner"
+      );
+    }
+    ownerIds.add(normalized.id);
+  }
+  if (ownerIds.size !== 1) {
+    throw new LegacyReadRefusal(
+      "ownership_not_uniform",
+      capability,
+      legacyDealId,
+      `appointment records carry ${ownerIds.size} distinct owners`
+    );
+  }
   await assertOwnershipContained({
     ctx: input.ctx,
     capability,
     externalId: legacyDealId,
-    ownerReference,
+    ownerReference: ownerReferences[0],
     firestore: input.readers.firestore,
   });
 

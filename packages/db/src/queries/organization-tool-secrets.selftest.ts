@@ -20,6 +20,7 @@ import {
   OrganizationToolSecretValidationError,
   describeOrganizationToolSecret,
   disconnectOrganizationToolSecret,
+  getOrganizationToolSecretForConnectionCheck,
   getOrganizationToolSecretForRuntime,
   getOrganizationToolSecretPublic,
   isOrganizationToolSecretProvider,
@@ -312,24 +313,69 @@ async function testRuntimeResolverFailsClosed(): Promise<void> {
       secret: material.secret as unknown as Record<string, unknown>,
     });
 
-    // Round trip: an adapter can read back exactly what was stored.
+    // THE PRODUCT PATH REFUSES AN UNPROVEN CREDENTIAL. The row is stored and
+    // decryptable, but `pending_test` means no connection check has reached the
+    // provider with it, and a product read is entitled to proven.
+    assert.equal(
+      await getOrganizationToolSecretForRuntime(db, {
+        organizationId: ORG,
+        provider: "traditional_gu_mongo",
+      }),
+      null,
+      "product runtime must refuse a pending_test credential"
+    );
+
+    // THE TESTING EXCEPTION, named so it cannot be taken by accident: the
+    // connection check resolves exactly the credential it is about to prove.
+    const underTest = await getOrganizationToolSecretForConnectionCheck<
+      { uri: string },
+      { database: string }
+    >(db, { organizationId: ORG, provider: "traditional_gu_mongo" });
+    assert.equal(underTest?.secret.uri, FAKE_MONGO_URI);
+    assert.equal(underTest?.config.database, "bot");
+    assert.equal(underTest?.status, "pending_test");
+
+    // THE PRODUCT PATH ACCEPTS IT ONCE PROVEN, and only then.
+    await markOrganizationToolSecretTested(db, {
+      organizationId: ORG,
+      provider: "traditional_gu_mongo",
+      ok: true,
+    });
     const runtime = await getOrganizationToolSecretForRuntime<
       { uri: string },
       { database: string }
     >(db, { organizationId: ORG, provider: "traditional_gu_mongo" });
     assert.equal(runtime?.secret.uri, FAKE_MONGO_URI);
-    assert.equal(runtime?.config.database, "bot");
-    assert.equal(runtime?.status, "pending_test");
+    assert.equal(runtime?.status, "active");
+    // The fingerprint travels with it, so an adapter can detect rotation
+    // without holding the material to compare.
+    assert.match(runtime?.fingerprint ?? "", /^[0-9a-f]{32}$/);
+    assert.equal(runtime?.fingerprint, underTest?.fingerprint);
 
-    // `requireActive` refuses an unproven credential.
-    assert.equal(
-      await getOrganizationToolSecretForRuntime(db, {
-        organizationId: ORG,
-        provider: "traditional_gu_mongo",
-        requireActive: true,
-      }),
-      null
-    );
+    // A credential the provider REJECTED is unusable on both paths - unlike
+    // `pending_test`, `invalid` is not a state a connection check may retry
+    // blindly through the testing door.
+    await markOrganizationToolSecretTested(db, {
+      organizationId: ORG,
+      provider: "traditional_gu_mongo",
+      ok: false,
+      error: "auth failed",
+    });
+    for (const resolve of [
+      getOrganizationToolSecretForRuntime,
+      getOrganizationToolSecretForConnectionCheck,
+    ]) {
+      assert.equal(
+        await resolve(db, { organizationId: ORG, provider: "traditional_gu_mongo" }),
+        null,
+        "an invalid credential is unusable on every path"
+      );
+    }
+    await markOrganizationToolSecretTested(db, {
+      organizationId: ORG,
+      provider: "traditional_gu_mongo",
+      ok: true,
+    });
 
     // Another Organization gets nothing, even for the same provider.
     assert.equal(
@@ -373,7 +419,7 @@ async function testRuntimeResolverFailsClosed(): Promise<void> {
       false
     );
   });
-  console.log("  ok  runtime resolver round-trips, scopes by org and fails closed");
+  console.log("  ok  product runtime accepts only `active`; the testing door is explicit and narrow");
 }
 
 async function testUndecryptableIsTreatedAsAbsent(): Promise<void> {
@@ -390,13 +436,19 @@ async function testUndecryptableIsTreatedAsAbsent(): Promise<void> {
         },
       ],
     });
-    assert.equal(
-      await getOrganizationToolSecretForRuntime(db, {
-        organizationId: ORG,
-        provider: "traditional_gu_firestore",
-      }),
-      null
-    );
+    for (const resolve of [
+      getOrganizationToolSecretForRuntime,
+      getOrganizationToolSecretForConnectionCheck,
+    ]) {
+      assert.equal(
+        await resolve(db, {
+          organizationId: ORG,
+          provider: "traditional_gu_firestore",
+        }),
+        null,
+        "undecryptable material is unusable on every path"
+      );
+    }
   });
   console.log("  ok  undecryptable material reads as absent, not as a half-usable credential");
 }

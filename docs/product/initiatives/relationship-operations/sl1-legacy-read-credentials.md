@@ -89,11 +89,15 @@ The **Mongo** side needs completing rather than correcting, because that paragra
 Credentials are stored per Organization in `organization_tool_secrets`, encrypted with AES-256-GCM, service-role only in both directions. The split is deliberate:
 
 - **`config_jsonb`** carries identity metadata — Firestore project and client email, Mongo host and database. Knowing *which* identity is bound is an operational question that must be answerable without decrypting anything.
-- **`encrypted_secret_jsonb`** carries the private key and the password-bearing URI, and nothing else. No read path in the codebase can select this column: the projection is a literal, so a future `select("*")` cannot widen it.
+- **`encrypted_secret_jsonb`** carries the private key and the password-bearing URI, and nothing else. **No metadata projection selects it** - `PUBLIC_COLUMNS` is a literal, so a future `select("*")` cannot widen what a metadata read returns. The **server-only runtime resolver does** select and decrypt it, because that is the only way an adapter obtains a credential; it refuses to run anywhere a `window` exists, and it is unreachable from a browser bundle or a user-JWT path.
 
 ```bash
 npx tsx scripts/bootstrap-legacy-credentials.ts --env-file .env.staging.local --env staging --legacy-env stage --organization <uuid>
 ```
+
+**Only `active` credentials serve product reads.** `getOrganizationToolSecretForRuntime` - the path the gateway uses - resolves nothing but `active`, so a credential no connection check has proven produces a refusal rather than a gamble against a live source. The single sanctioned exception is named rather than flagged: `getOrganizationToolSecretForConnectionCheck` also accepts `pending_test`, and its only legitimate caller is the code that immediately proves or rejects that credential. `invalid`, `disconnected`, blank and undecryptable are unusable on both paths.
+
+**Rotation takes effect without a restart.** Each resolved credential carries a non-secret fingerprint - a truncated digest of the effective material - and the adapters key their connection caches on it. Replacing a credential changes the fingerprint, so the cached driver client no longer matches and is retired; the Mongo client is closed, because it owns a connection pool that would otherwise keep authenticating with the retired credential. The fingerprint belongs in a cache key, never in a log line or an evidence artifact.
 
 Dry-run is the default. `--apply` stores, and every stored credential lands in `pending_test` — including a replacement, because new material has not been proven and inheriting `active` would assert exactly what was not checked. The script then performs one narrow read per provider and flips `pending_test → active`, or records `invalid` with the reason. **Rotation is the same command run again.**
 

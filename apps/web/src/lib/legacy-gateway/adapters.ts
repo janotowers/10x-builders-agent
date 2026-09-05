@@ -56,67 +56,147 @@ interface MongoClientLike {
   close(): Promise<void>;
 }
 
+/**
+ * Every adapter credential carries a `fingerprint`: a non-secret digest of the
+ * effective material, produced by the credential store.
+ *
+ * It is what makes rotation work. Driver instances are expensive and hold
+ * connection pools, so they are cached - but a cache keyed on the Organization
+ * alone would keep serving reads through the OLD client after a credential was
+ * replaced and re-proven, until someone restarted the process. Keying on the
+ * fingerprint too means a replaced credential simply does not match the cached
+ * client, and the stale one is evicted.
+ */
 export interface FirestoreAdapterCredentials {
   projectId: string;
   clientEmail: string;
   privateKey: string;
+  fingerprint: string;
 }
 
 export interface MongoAdapterCredentials {
   uri: string;
   database: string;
+  fingerprint: string;
+}
+
+export interface CacheEntry<T> {
+  fingerprint: string;
+  client: T;
 }
 
 /**
- * Driver instances are expensive and hold connection pools, so they are cached
- * per Organization for the process lifetime. The cache key is the Organization
- * id, never credential material.
+ * One entry per Organization, holding the fingerprint it was built from. Never
+ * the credential material, and the fingerprint stays internal to this map - it
+ * is a one-way digest, but it belongs in a cache key, not in a log line.
  */
-const firestoreCache = new Map<string, FirestoreLike>();
-const mongoCache = new Map<string, MongoClientLike>();
+const firestoreCache = new Map<string, CacheEntry<FirestoreLike>>();
+const mongoCache = new Map<string, CacheEntry<MongoClientLike>>();
+
+/**
+ * The one place cache reuse and rotation are decided, shared by both adapters.
+ *
+ * Reuse when the fingerprint matches; otherwise retire the stale client —
+ * disposing it first where the driver owns resources — and build a new one.
+ * Both loaders go through this, so rotation cannot be correct for one store and
+ * quietly wrong for the other.
+ *
+ * Exported for the rotation selftest, which drives it with instrumented fakes
+ * so the contract is proven without constructing a real driver or opening a
+ * socket. Not re-exported from the module index.
+ */
+export async function withRotationAwareCache<T>(
+  cache: Map<string, CacheEntry<T>>,
+  params: {
+    organizationId: string;
+    fingerprint: string;
+    label: string;
+    create: () => Promise<T>;
+    dispose?: (client: T) => Promise<void>;
+  }
+): Promise<T> {
+  const cached = cache.get(params.organizationId);
+  if (cached) {
+    if (cached.fingerprint === params.fingerprint) return cached.client;
+    cache.delete(params.organizationId);
+    console.warn(
+      `[legacy-gateway] ${params.label} credential rotated for organization ` +
+        `${params.organizationId}; the cached client is retired`
+    );
+    if (params.dispose) {
+      await params.dispose(cached.client).catch((error: unknown) => {
+        console.error(
+          `[legacy-gateway] disposing the rotated ${params.label} client failed:`,
+          error
+        );
+      });
+    }
+  }
+  const client = await params.create();
+  cache.set(params.organizationId, { fingerprint: params.fingerprint, client });
+  return client;
+}
 
 async function loadFirestore(
   organizationId: string,
   credentials: FirestoreAdapterCredentials
 ): Promise<FirestoreLike> {
-  const cached = firestoreCache.get(organizationId);
-  if (cached) return cached;
-  const moduleName = "@google-cloud/firestore";
-  const imported = (await import(/* webpackIgnore: true */ moduleName)) as {
-    Firestore: new (options: Record<string, unknown>) => FirestoreLike;
-  };
-  const instance = new imported.Firestore({
-    projectId: credentials.projectId,
-    credentials: {
-      client_email: credentials.clientEmail,
-      // Key material arrives with escaped newlines when it round-trips through
-      // an environment variable; the driver needs the real ones.
-      private_key: credentials.privateKey.replace(/\\n/g, "\n"),
+  return withRotationAwareCache(firestoreCache, {
+    organizationId,
+    fingerprint: credentials.fingerprint,
+    label: "firestore",
+    // Firestore clients hold HTTP/2 channels rather than a pool this module
+    // owns, and the driver exposes no close on the surface used here, so a
+    // retired instance is dropped for garbage collection. What matters is that
+    // it stops serving reads.
+    create: async () => {
+      const moduleName = "@google-cloud/firestore";
+      const imported = (await import(/* webpackIgnore: true */ moduleName)) as {
+        Firestore: new (options: Record<string, unknown>) => FirestoreLike;
+      };
+      return new imported.Firestore({
+        projectId: credentials.projectId,
+        credentials: {
+          client_email: credentials.clientEmail,
+          // Key material arrives with escaped newlines when it round-trips
+          // through an environment variable; the driver needs the real ones.
+          private_key: credentials.privateKey.replace(/\\n/g, "\n"),
+        },
+      });
     },
   });
-  firestoreCache.set(organizationId, instance);
-  return instance;
 }
 
 async function loadMongo(
   organizationId: string,
   credentials: MongoAdapterCredentials
 ): Promise<MongoClientLike> {
-  const cached = mongoCache.get(organizationId);
-  if (cached) return cached;
-  const moduleName = "mongodb";
-  const imported = (await import(/* webpackIgnore: true */ moduleName)) as {
-    MongoClient: new (uri: string, options?: Record<string, unknown>) => MongoClientLike;
-  };
-  const client = new imported.MongoClient(credentials.uri, {
-    serverSelectionTimeoutMS: 15000,
-    // The bootstrap identity is read-only at the provider; asking for a
-    // secondary keeps the read off the primary's back as well.
-    readPreference: "secondaryPreferred",
+  return withRotationAwareCache(mongoCache, {
+    organizationId,
+    fingerprint: credentials.fingerprint,
+    label: "mongo",
+    // A Mongo client owns a real connection pool, so a retired one is CLOSED
+    // rather than abandoned — dropping it would leak sockets that still
+    // authenticate with the retired credential.
+    dispose: (client) => client.close(),
+    create: async () => {
+      const moduleName = "mongodb";
+      const imported = (await import(/* webpackIgnore: true */ moduleName)) as {
+        MongoClient: new (
+          uri: string,
+          options?: Record<string, unknown>
+        ) => MongoClientLike;
+      };
+      const client = new imported.MongoClient(credentials.uri, {
+        serverSelectionTimeoutMS: 15000,
+        // The bootstrap identity is read-only at the provider; asking for a
+        // secondary keeps the read off the primary's back as well.
+        readPreference: "secondaryPreferred",
+      });
+      await client.connect();
+      return client;
+    },
   });
-  await client.connect();
-  mongoCache.set(organizationId, client);
-  return client;
 }
 
 function toRawDocument(snapshot: FirestoreDocumentSnapshot): RawDocument | null {
@@ -200,13 +280,34 @@ export function createMongoReader(params: {
 /** Closes cached driver connections. For scripts and tests, not request paths. */
 export async function closeLegacySourceConnections(): Promise<void> {
   firestoreCache.clear();
-  const clients = [...mongoCache.values()];
+  const entries = [...mongoCache.values()];
   mongoCache.clear();
   await Promise.all(
-    clients.map((client) =>
-      client.close().catch((error: unknown) => {
+    entries.map((entry) =>
+      entry.client.close().catch((error: unknown) => {
         console.error("[legacy-gateway] mongo close failed:", error);
       })
     )
   );
+}
+
+/**
+ * Test seam: what the caches currently hold, by fingerprint. Exposed so the
+ * rotation contract can be asserted deterministically without reaching into
+ * module internals, and deliberately not exported from the module index.
+ */
+export function inspectAdapterCaches(): {
+  firestore: Array<{ organizationId: string; fingerprint: string }>;
+  mongo: Array<{ organizationId: string; fingerprint: string }>;
+} {
+  return {
+    firestore: [...firestoreCache.entries()].map(([organizationId, entry]) => ({
+      organizationId,
+      fingerprint: entry.fingerprint,
+    })),
+    mongo: [...mongoCache.entries()].map(([organizationId, entry]) => ({
+      organizationId,
+      fingerprint: entry.fingerprint,
+    })),
+  };
 }

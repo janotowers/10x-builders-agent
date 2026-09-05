@@ -33,6 +33,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import {
   deleteOrganizationFlag,
+  fingerprintCredentialMaterial,
   getOrganizationById,
   getOrganizationFlag,
   getOrganizationToolSecretPublic,
@@ -82,6 +83,28 @@ function record(assertion: string, label: string, ok: boolean, detail?: string):
 function redact(value: string | null): string | null {
   if (!value) return null;
   return `sha256:${createHash("sha256").update(value).digest("hex").slice(0, 16)}`;
+}
+
+/**
+ * Provenance as it belongs in a committed artifact.
+ *
+ * The Organization id is a tenant primary key: the evidence needs it to be
+ * *the same* Organization throughout, not to be readable, so it travels as a
+ * stable digest. The Supabase project ref and the legacy Firestore project stay
+ * literal - they are explicitly public identifiers and they are what tells a
+ * reader which environment was reached.
+ */
+function redactProvenance(
+  provenance: { organizationId: string; externalId: string; sourcePath: string },
+  externalIdLiteral: string
+): Record<string, unknown> {
+  const { organizationId, ...rest } = provenance;
+  return {
+    ...rest,
+    organizationDigest: redact(organizationId),
+    externalId: redact(provenance.externalId),
+    sourcePath: provenance.sourcePath.replace(externalIdLiteral, "<lead>"),
+  };
 }
 
 /**
@@ -242,12 +265,29 @@ async function main(): Promise<void> {
           projectId: legacy.firestore.projectId,
           clientEmail: legacy.firestore.clientEmail,
           privateKey: String(legacy.firestore.serviceAccount.private_key ?? ""),
+          // Fingerprinted on the same basis as the credential store, so this
+          // path cannot collide with a cached client built from a stored
+          // credential.
+          fingerprint: fingerprintCredentialMaterial(
+            {
+              project_id: legacy.firestore.projectId,
+              client_email: legacy.firestore.clientEmail,
+            },
+            { private_key: legacy.firestore.serviceAccount.private_key }
+          ),
         },
       }),
       mongo: legacy.mongo
         ? createMongoReader({
             organizationId,
-            credentials: { uri: legacy.mongo.uri, database: legacy.mongo.database },
+            credentials: {
+              uri: legacy.mongo.uri,
+              database: legacy.mongo.database,
+              fingerprint: fingerprintCredentialMaterial(
+                { database: legacy.mongo.database },
+                { uri: legacy.mongo.uri }
+              ),
+            },
           })
         : null,
     };
@@ -336,11 +376,7 @@ async function main(): Promise<void> {
       fieldsPresent: Object.entries(lead.value)
         .filter(([, value]) => value !== null)
         .map(([key]) => key),
-      provenance: {
-        ...lead.provenance,
-        externalId: redact(lead.provenance.externalId),
-        sourcePath: lead.provenance.sourcePath.replace(legacyLeadId, "<lead>"),
-      },
+      provenance: redactProvenance(lead.provenance, legacyLeadId),
     };
   } catch (error) {
     record(
@@ -408,11 +444,7 @@ async function main(): Promise<void> {
         {}
       ),
       withWamid: messages.value.items.filter((item) => item.wamid).length,
-      provenance: {
-        ...messages.provenance,
-        externalId: redact(messages.provenance.externalId),
-        sourcePath: messages.provenance.sourcePath.replace(legacyLeadId, "<lead>"),
-      },
+      provenance: redactProvenance(messages.provenance, legacyLeadId),
     };
   } catch (error) {
     record(
@@ -502,7 +534,9 @@ async function main(): Promise<void> {
     legacyEnvironment: legacy.environment,
     legacyFirestoreProject: legacy.firestore.projectId,
     legacyReadIdentity: legacy.firestore.clientEmail,
-    organizationId,
+    // Tenant primary key: digested, because the evidence needs it to be the
+    // same Organization throughout, not to be readable.
+    organizationDigest: redact(organizationId),
     ranAt: new Date().toISOString(),
     // Where each moving part actually lives, because "staging" alone is
     // ambiguous across four different things in this run.

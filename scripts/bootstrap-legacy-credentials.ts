@@ -23,6 +23,7 @@
 // Re-running is safe and is how a credential is rotated: the row is replaced
 // and lands back in `pending_test` until the connection check passes again.
 
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { writeFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
@@ -51,6 +52,25 @@ import {
 } from "./lib/legacy-target";
 
 const require_ = createRequire(import.meta.url);
+
+/** Stable, non-reversible stand-in for identifiers a committed artifact does
+ *  not need to state literally. */
+const digest = (value: string): string =>
+  `sha256:${createHash("sha256").update(value).digest("hex").slice(0, 16)}`;
+
+/**
+ * Identity metadata as it belongs in a committed artifact.
+ *
+ * The database name stays literal - it IS the semantic fact, the source of
+ * record this Slice reads. The Atlas hostname does not need to be readable for
+ * the evidence to mean anything, so it travels as a stable digest: a changed
+ * cluster still shows up as a changed digest.
+ */
+function redactStoredConfig(config: unknown): unknown {
+  if (!config || typeof config !== "object") return config;
+  const { host, ...rest } = config as Record<string, unknown>;
+  return typeof host === "string" ? { ...rest, hostDigest: digest(host) } : config;
+}
 
 function parseOrganization(argv: string[]): string {
   for (let i = 0; i < argv.length; i += 1) {
@@ -336,8 +356,9 @@ async function main(): Promise<void> {
         status: row.status,
         lastCheckedAt: row.last_checked_at,
         lastError: row.last_error,
-        // Identity metadata only. The ciphertext column is not selectable here.
-        config: row.config_jsonb,
+        // Identity metadata only - this projection cannot select the ciphertext
+        // column - with the Atlas hostname digested.
+        config: redactStoredConfig(row.config_jsonb),
       };
     }
   }
@@ -354,7 +375,7 @@ async function main(): Promise<void> {
           guOsProjectRef: target.projectRef,
           legacyEnvironment: legacy.environment,
           legacyFirestoreProject: legacy.firestore.projectId,
-          organizationId,
+          organizationDigest: digest(organizationId),
           ranAt: new Date().toISOString(),
           lifecycle:
             "every stored credential lands `pending_test`; a real connection check per provider then flips it to `active`, records `invalid`, or - when the provider could not be reached at all - leaves it `pending_test` as unproven rather than broken",

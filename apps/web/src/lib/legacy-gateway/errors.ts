@@ -22,6 +22,15 @@ export type LegacyReadRefusalReason =
   | "belongs_to_another_organization"
   /** The record's legacy owner does not resolve to the calling Organization. */
   | "ownership_not_contained"
+  /**
+   * A multi-record result does not carry one single, resolvable owner.
+   *
+   * Distinct from `ownership_not_contained` because the failure is different:
+   * there is no single owner to contain. Containing the first record and
+   * returning the rest would leak another Organization's rows, so a mixed,
+   * missing or contradictory owner set refuses outright.
+   */
+  | "ownership_not_uniform"
   /** No usable credential for the provider this capability needs. */
   | "no_usable_credential"
   /** The record does not exist in any allowlisted store. */
@@ -43,6 +52,7 @@ export const AUTHORITY_REFUSALS: readonly LegacyReadRefusalReason[] = [
   "organization_not_bound_to_source",
   "belongs_to_another_organization",
   "ownership_not_contained",
+  "ownership_not_uniform",
 ];
 
 export class LegacyReadRefusal extends Error {

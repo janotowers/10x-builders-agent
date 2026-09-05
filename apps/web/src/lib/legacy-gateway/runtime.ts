@@ -6,6 +6,10 @@
  * never cached in a form that outlives the process or crosses an Organization
  * boundary.
  *
+ * Only `active` credentials reach an adapter here: `getOrganizationToolSecretForRuntime`
+ * refuses anything a connection check has not proven, so a stored-but-unproven
+ * credential produces a refusal rather than a gamble against a live source.
+ *
  * Fail-closed shape of this module: a missing Firestore credential is a refusal,
  * because three of the four capabilities cannot answer without it. A missing
  * Mongo credential is NOT a refusal - only `appointment_get` uses Mongo, and it
@@ -60,6 +64,9 @@ export async function resolveLegacySourceReaders(
       projectId: firestoreSecret.config.project_id,
       clientEmail: firestoreSecret.config.client_email,
       privateKey: firestoreSecret.secret.private_key,
+      // Carries the store's fingerprint so a rotated credential retires the
+      // cached client instead of being shadowed by it.
+      fingerprint: firestoreSecret.fingerprint,
     },
   });
   void touchOrganizationToolSecretUsed(input.db, {
@@ -85,6 +92,7 @@ export async function resolveLegacySourceReaders(
         credentials: {
           uri: mongoSecret.secret.uri,
           database: mongoSecret.config.database,
+          fingerprint: mongoSecret.fingerprint,
         },
       });
       void touchOrganizationToolSecretUsed(input.db, {

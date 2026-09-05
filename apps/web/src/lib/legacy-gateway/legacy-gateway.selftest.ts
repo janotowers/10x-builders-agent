@@ -34,6 +34,7 @@ import {
   DELIBERATELY_EXCLUDED_PATHS,
 } from "./allowlist";
 import { assertAllowedSourcePath, resolveSourcePath } from "./allowlist";
+import { withRotationAwareCache, type CacheEntry } from "./adapters";
 import {
   appointmentGet,
   legacyLeadGetContext,
@@ -848,6 +849,187 @@ function testNormalization(): void {
   console.log("  ok  normalizers prefer null over a guess");
 }
 
+// ============================================================
+// Credential rotation must retire the cached driver client
+// ============================================================
+
+async function testCredentialRotationInvalidatesCache(): Promise<void> {
+  // Both adapters resolve their client through this one helper, so proving the
+  // contract here proves it for Firestore and Mongo alike — without
+  // constructing a real driver or opening a socket.
+  const originalWarn = console.warn;
+  console.warn = () => undefined;
+  try {
+    interface FakeClient {
+      id: number;
+      closed: boolean;
+    }
+    const cache = new Map<string, CacheEntry<FakeClient>>();
+    let created = 0;
+    const disposed: number[] = [];
+    const load = (organizationId: string, fingerprint: string) =>
+      withRotationAwareCache(cache, {
+        organizationId,
+        fingerprint,
+        label: "test",
+        create: async () => ({ id: ++created, closed: false }),
+        dispose: async (client) => {
+          client.closed = true;
+          disposed.push(client.id);
+        },
+      });
+
+    // Same credential: the expensive client is reused, which is the whole
+    // reason the cache exists.
+    const first = await load(PILOT_ORG, "fingerprint-a");
+    const again = await load(PILOT_ORG, "fingerprint-a");
+    assert.equal(created, 1, "an unchanged credential must reuse its client");
+    assert.equal(first, again);
+    assert.deepEqual(disposed, []);
+
+    // Rotated credential: a NEW client, and the stale one is disposed rather
+    // than left holding a pool that still authenticates with the retired
+    // credential.
+    const rotated = await load(PILOT_ORG, "fingerprint-b");
+    assert.equal(created, 2, "a rotated credential must build a new client");
+    assert.notEqual(rotated, first);
+    assert.deepEqual(disposed, [first.id], "the retired client must be disposed");
+    assert.equal(first.closed, true);
+
+    // The rotated client is now the cached one — no reversion to the old.
+    assert.equal(await load(PILOT_ORG, "fingerprint-b"), rotated);
+    assert.equal(created, 2);
+
+    // Rotating back to a previously seen credential still rebuilds: the cache
+    // holds one entry per Organization, not a history to resurrect from.
+    const back = await load(PILOT_ORG, "fingerprint-a");
+    assert.equal(created, 3);
+    assert.notEqual(back, first);
+
+    // Organizations never share a cached client.
+    const otherOrg = await load(OTHER_ORG, "fingerprint-a");
+    assert.equal(created, 4);
+    assert.notEqual(otherOrg, back);
+    assert.equal(cache.size, 2);
+
+    // A dispose that throws must not prevent the rotation.
+    const brittle = new Map<string, CacheEntry<FakeClient>>();
+    let brittleCreated = 0;
+    const loadBrittle = (fingerprint: string) =>
+      withRotationAwareCache(brittle, {
+        organizationId: PILOT_ORG,
+        fingerprint,
+        label: "test",
+        create: async () => ({ id: ++brittleCreated, closed: false }),
+        dispose: async () => {
+          throw new Error("close failed");
+        },
+      });
+    const originalError = console.error;
+    console.error = () => undefined;
+    try {
+      await loadBrittle("one");
+      const replaced = await loadBrittle("two");
+      assert.equal(brittleCreated, 2, "a failed dispose must not block rotation");
+      assert.equal(brittle.get(PILOT_ORG)?.client, replaced);
+    } finally {
+      console.error = originalError;
+    }
+  } finally {
+    console.warn = originalWarn;
+  }
+  console.log("  ok  a rotated credential retires its cached client and disposes it");
+}
+
+// ============================================================
+// Appointment containment across a multi-record result
+// ============================================================
+
+const OTHER_OWNER_REFERENCE = {
+  id: OTHER_OWNER_UID,
+  path: `users/${OTHER_OWNER_UID}`,
+};
+
+async function testAppointmentOwnershipIsUniform(): Promise<void> {
+  // A deal whose appointments do not all belong to the calling Organization:
+  // containing the first record and returning the rest would leak the others.
+  await expectRefusal(
+    () =>
+      appointmentGet({
+        ctx: pilotContext(),
+        readers: fixtureReaders((documents) => {
+          documents.firestoreAppointments[1].data.user_owner =
+            OTHER_OWNER_REFERENCE;
+        }),
+        legacyDealId: appointmentFixture.legacyDealId,
+        env: GATEWAY_ON,
+      }),
+    "ownership_not_uniform"
+  );
+
+  // The same holds when the odd record is on the Mongo side.
+  await expectRefusal(
+    () =>
+      appointmentGet({
+        ctx: pilotContext(),
+        readers: fixtureReaders((documents) => {
+          documents.mongoAppointments[0].data.user_owner = OTHER_OWNER_UID;
+        }),
+        legacyDealId: appointmentFixture.legacyDealId,
+        env: GATEWAY_ON,
+      }),
+    "ownership_not_uniform"
+  );
+
+  // A record with no resolvable owner cannot be proven contained, so the whole
+  // result refuses rather than returning the records that could be.
+  await expectRefusal(
+    () =>
+      appointmentGet({
+        ctx: pilotContext(),
+        readers: fixtureReaders((documents) => {
+          documents.mongoAppointments[1].data.user_owner = "";
+        }),
+        legacyDealId: appointmentFixture.legacyDealId,
+        env: GATEWAY_ON,
+      }),
+    "ownership_not_uniform"
+  );
+
+  // Uniform ownership belonging to ANOTHER Organization refuses on containment
+  // — a different failure, and it must not be conflated with mixture.
+  await expectRefusal(
+    () =>
+      appointmentGet({
+        ctx: pilotContext(),
+        readers: fixtureReaders((documents) => {
+          for (const document of documents.firestoreAppointments) {
+            document.data.user_owner = OTHER_OWNER_REFERENCE;
+          }
+          for (const document of documents.mongoAppointments) {
+            document.data.user_owner = OTHER_OWNER_UID;
+          }
+        }),
+        legacyDealId: appointmentFixture.legacyDealId,
+        env: GATEWAY_ON,
+      }),
+    "belongs_to_another_organization"
+  );
+
+  // The Firestore reference form and the Mongo bare-uid form describe the same
+  // owner, so the uniformity check must not mistake representation for
+  // difference — the unmodified fixture still succeeds.
+  const ok = await appointmentGet({
+    ctx: pilotContext(),
+    readers: fixtureReaders(),
+    legacyDealId: appointmentFixture.legacyDealId,
+    env: GATEWAY_ON,
+  });
+  assert.equal(ok.value.entries.length, 3);
+
+  console.log("  ok  appointments refuse unless every record shares one contained owner");
+}
+
 async function main(): Promise<void> {
   console.log("legacy gateway selftest");
   await testLeadContext();
@@ -856,6 +1038,8 @@ async function main(): Promise<void> {
   await testThreadAwareMessages();
   await testDriftAlarm();
   await testBindingGate();
+  await testAppointmentOwnershipIsUniform();
+  await testCredentialRotationInvalidatesCache();
   await testFlagsOffIsInert();
   testNoGenericCrudSurface();
   testNormalization();

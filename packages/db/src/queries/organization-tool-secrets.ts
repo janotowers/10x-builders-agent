@@ -26,6 +26,7 @@ import type {
   OrganizationToolSecretStatus,
 } from "@agents/types";
 import { ORGANIZATION_TOOL_SECRET_PROVIDERS } from "@agents/types";
+import { createHash } from "node:crypto";
 import type { DbClient } from "../client";
 import { decryptJson, encryptJson } from "../crypto";
 
@@ -367,51 +368,75 @@ export interface OrganizationToolSecretRuntime<
   config: TConfig;
   secret: TSecret;
   status: OrganizationToolSecretStatus;
+  /**
+   * Non-secret digest of the effective credential (config + secret).
+   *
+   * It exists so a long-lived process can tell that a credential CHANGED
+   * without holding the material to compare. Adapters key their connection
+   * caches on it, which is what makes rotation take effect: a replaced
+   * credential produces a different fingerprint, the cached client no longer
+   * matches, and it is discarded.
+   *
+   * A truncated one-way digest is not credential material and cannot be
+   * reversed, but it is still treated as internal: it belongs in a cache key,
+   * not in a log line or an evidence artifact.
+   */
+  fingerprint: string;
+  /** Row timestamp, for observability. Non-secret. */
+  updatedAt: string | null;
 }
 
 /**
- * Decrypts a credential for an adapter. The only function here that can produce
- * secret material, and the only one that must never be reachable from a browser
- * bundle - hence the explicit environment assertion rather than a comment.
+ * Digest of the effective credential. Never reversible, never the material.
  *
- * Returns `null` (rather than throwing) when the credential is absent,
- * disconnected, blank or undecryptable: from an adapter's point of view all
- * four mean "no usable credential", and the caller fails closed the same way.
+ * Exported so a caller that legitimately builds an adapter from material it
+ * already holds - the SL-1 hosted verification run, reading from an explicitly
+ * declared legacy target - produces a fingerprint on the same basis as the
+ * credential store, instead of inventing a placeholder that could collide.
  */
-export async function getOrganizationToolSecretForRuntime<
-  TSecret = Record<string, unknown>,
-  TConfig = Record<string, unknown>,
->(
+export function fingerprintCredentialMaterial(
+  config: unknown,
+  secret: unknown
+): string {
+  return credentialFingerprint(config, secret);
+}
+
+function credentialFingerprint(config: unknown, secret: unknown): string {
+  return createHash("sha256")
+    .update(JSON.stringify({ config: config ?? {}, secret: secret ?? {} }))
+    .digest("hex")
+    .slice(0, 32);
+}
+
+const RUNTIME_COLUMNS = "config_jsonb,encrypted_secret_jsonb,status,updated_at";
+
+async function readOrganizationToolSecret<TSecret, TConfig>(
   db: DbClient,
   params: {
     organizationId: string;
     provider: OrganizationToolSecretProvider;
-    /** Refuse anything but `active`. Default allows `pending_test` too, so a
-     *  connection check can use the credential it is about to validate. */
-    requireActive?: boolean;
-  }
+  },
+  usableStatuses: readonly OrganizationToolSecretStatus[],
+  caller: string
 ): Promise<OrganizationToolSecretRuntime<TSecret, TConfig> | null> {
   if (typeof window !== "undefined") {
     throw new Error(
-      "getOrganizationToolSecretForRuntime is server-only: organization credentials must never be resolved in a browser context"
+      `${caller} is server-only: organization credentials must never be resolved in a browser context`
     );
   }
   if (!params.organizationId?.trim()) {
-    throw new Error(
-      "getOrganizationToolSecretForRuntime: organizationId is required (never inferred)"
-    );
+    throw new Error(`${caller}: organizationId is required (never inferred)`);
   }
   const { data, error } = await db
     .from("organization_tool_secrets")
-    .select("config_jsonb,encrypted_secret_jsonb,status")
+    .select(RUNTIME_COLUMNS)
     .eq("organization_id", params.organizationId)
     .eq("provider", params.provider)
     .maybeSingle();
   if (error) throw error;
   if (!data) return null;
   const status = data.status as OrganizationToolSecretStatus;
-  if (status === "disconnected" || status === "invalid") return null;
-  if (params.requireActive && status !== "active") return null;
+  if (!usableStatuses.includes(status)) return null;
   if (!data.encrypted_secret_jsonb) return null;
   let secret: TSecret;
   try {
@@ -421,11 +446,69 @@ export async function getOrganizationToolSecretForRuntime<
     // reconfigured rather than half-used.
     return null;
   }
+  const config = (data.config_jsonb ?? {}) as TConfig;
   return {
-    config: (data.config_jsonb ?? {}) as TConfig,
+    config,
     secret,
     status,
+    fingerprint: credentialFingerprint(config, secret),
+    updatedAt: (data.updated_at as string | null) ?? null,
   };
+}
+
+/**
+ * The PRODUCT path: decrypts a credential for an adapter to use for real work.
+ *
+ * Only `active` resolves. A credential is `active` solely because a real
+ * connection check reached the provider with it (`markOrganizationToolSecretTested`),
+ * so this is the difference between "stored" and "proven" — and product reads
+ * are entitled to proven. `pending_test`, `invalid`, `disconnected`, blank and
+ * undecryptable all return `null`, because from an adapter's point of view they
+ * mean the same thing: no usable credential, fail closed.
+ *
+ * This is the only function here that can produce secret material, and the only
+ * one that must never be reachable from a browser bundle - hence the explicit
+ * environment assertion rather than a comment.
+ */
+export async function getOrganizationToolSecretForRuntime<
+  TSecret = Record<string, unknown>,
+  TConfig = Record<string, unknown>,
+>(
+  db: DbClient,
+  params: { organizationId: string; provider: OrganizationToolSecretProvider }
+): Promise<OrganizationToolSecretRuntime<TSecret, TConfig> | null> {
+  return readOrganizationToolSecret<TSecret, TConfig>(
+    db,
+    params,
+    ["active"],
+    "getOrganizationToolSecretForRuntime"
+  );
+}
+
+/**
+ * The TESTING exception, named so it cannot be taken by accident.
+ *
+ * A connection check has to use the credential it is about to prove, which by
+ * definition is not yet `active`. This is the only sanctioned way to resolve an
+ * unproven credential, and its single legitimate caller is the code that
+ * immediately calls `markOrganizationToolSecretTested` with the result.
+ *
+ * Do NOT use it to serve a product read. If a credential has not passed a
+ * connection check, a read must fail closed rather than gamble.
+ */
+export async function getOrganizationToolSecretForConnectionCheck<
+  TSecret = Record<string, unknown>,
+  TConfig = Record<string, unknown>,
+>(
+  db: DbClient,
+  params: { organizationId: string; provider: OrganizationToolSecretProvider }
+): Promise<OrganizationToolSecretRuntime<TSecret, TConfig> | null> {
+  return readOrganizationToolSecret<TSecret, TConfig>(
+    db,
+    params,
+    ["active", "pending_test"],
+    "getOrganizationToolSecretForConnectionCheck"
+  );
 }
 
 /** Presence/identity summary safe to log. Never includes secret material. */

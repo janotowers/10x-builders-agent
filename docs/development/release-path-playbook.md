@@ -97,6 +97,12 @@ This matters because `scripts/bootstrap-organization.ts` merges `apps/web/.env.l
 
 Secrets never enter tracked files, logs or command output. `.env.staging.local` is git-ignored via `.env.*.local`. Never reuse a production credential for another environment.
 
+**What may appear in committed evidence.** Three tiers, and the middle one is the easy mistake:
+
+- **Explicitly public configuration identifiers** — the project ref, the environment URL, the publishable key, a legacy project id, a read-identity email — **may be recorded literally** when the evidence needs them. They identify which environment was reached, and hiding them makes evidence harder to audit for no security gain.
+- **Tenant primary keys and internal infrastructure identifiers** — Organization uuids, database cluster hostnames — **should normally be digested or redacted**, unless the literal value is necessary to reproduce or interpret the evidence, or is already explicitly classified public above. A stable digest still proves identity and consistency across artifacts, which is usually the whole point.
+- **Credential material** is never committed, in any form.
+
 ### 4.1 Legacy source targets (R1 SL-1)
 
 A Gu OS environment and a Traditional Gu source environment are **two separate targets**, and a run declares both. `scripts/lib/legacy-target.ts` resolves the second one under the same rules.

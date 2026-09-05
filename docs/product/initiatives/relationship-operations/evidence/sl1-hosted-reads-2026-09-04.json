@@ -5,7 +5,7 @@
   "legacyEnvironment": "prod",
   "legacyFirestoreProject": "ungga-full",
   "legacyReadIdentity": "gu-os-sl1-reader@ungga-full.iam.gserviceaccount.com",
-  "organizationId": "3fd4be4b-b58d-4c5f-b91e-21d02ad02118",
+  "organizationDigest": "sha256:eab41f21d4c319b6",
   "ranAt": "2026-09-04T21:57:13.737Z",
   "required": {
     "total": 9,
@@ -96,7 +96,7 @@
         "externalId": "sha256:55506e222cfa4a1b",
         "capability": "legacy_lead_get_context",
         "adapter": "bootstrap_direct",
-        "organizationId": "3fd4be4b-b58d-4c5f-b91e-21d02ad02118",
+        "organizationDigest": "sha256:eab41f21d4c319b6",
         "bindingState": "unbound",
         "freshness": {
           "readAt": "2026-09-04T21:57:13.084Z",
@@ -134,7 +134,7 @@
         "externalId": "sha256:55506e222cfa4a1b",
         "capability": "legacy_lead_get_recent_messages",
         "adapter": "bootstrap_direct",
-        "organizationId": "3fd4be4b-b58d-4c5f-b91e-21d02ad02118",
+        "organizationDigest": "sha256:eab41f21d4c319b6",
         "bindingState": "unbound",
         "freshness": {
           "readAt": "2026-09-04T21:57:13.737Z",
@@ -157,5 +157,17 @@
     "the Organization-scoped credential path (organization_tool_secrets) - declared not yet configured for this environment",
     "appointment_get against real hosted data",
     "property_get_details against real hosted data"
-  ]
+  ],
+  "redaction": {
+    "appliedAt": "2026-09-05",
+    "policy": "Explicitly public configuration identifiers are recorded as-is; credential material is never committed; tenant primary keys and internal infrastructure hostnames are digested unless the literal value is needed to reproduce or interpret the evidence. See release-path-playbook.md section 4.",
+    "digested": [
+      "organizationId -> organizationDigest (tenant primary key; the digest is stable, so identity and consistent scoping remain verifiable across artifacts)",
+      "traditional_gu_mongo config.host -> config.hostDigest (Atlas cluster hostname; the declared database name is retained because it is the semantic source of record)"
+    ],
+    "unchanged": [
+      "Gu OS staging Supabase project ref - explicitly classified a public identifier",
+      "legacy Firestore project and read-identity email - required to state which identity performed the read"
+    ]
+  }
 }

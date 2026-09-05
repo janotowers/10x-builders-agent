@@ -10,7 +10,7 @@
 | Moving part | Where it actually is |
 |---|---|
 | The verifier process | the operator workstation. There is **no deployed Gu OS application runtime in staging**; the gateway code executes inside this script. |
-| Gu OS hosted state | **Gu OS staging** (`Gu-OS-Stage`, Supabase project `wdtjqlbsxwiijasicint`) — the only place these runs mutate anything |
+| Gu OS hosted state | **Gu OS staging** (`Gu-OS-Stage`, Supabase project `wdtjqlbsxwiijasicint`) — the only place these runs mutate anything. The Organization is identified in the artifacts by a stable digest rather than its uuid |
 | Legacy Firestore source | **Traditional Gu production**, project `ungga-full`, via `gu-os-sl1-reader@ungga-full.iam.gserviceaccount.com` (`roles/datastore.viewer`) — **read-only** |
 | Legacy Mongo source | a **single Atlas cluster**, production by construction — **read-only**, one `estimatedDocumentCount` during the credential check |
 | Gu OS production | **untouched**. No deployment, no migration, no read |
@@ -28,13 +28,13 @@ Before any read, the two read identities were stored as Organization-scoped cred
 | Provider | After upsert | Connection check | After check | Identity metadata stored |
 |---|---|---|---|---|
 | `traditional_gu_firestore` | `pending_test` | **passed** — `leads` readable | **`active`** | project `ungga-full`, `gu-os-sl1-reader@ungga-full…` |
-| `traditional_gu_mongo` | `pending_test` | **passed** — `gu2.appointments` reachable, ~9,379 documents | **`active`** | host `cluster0.bwhlgmg.mongodb.net`, database `gu2` |
+| `traditional_gu_mongo` | `pending_test` | **passed** — `gu2.appointments` reachable, ~9,379 documents | **`active`** | Atlas host `sha256:3c877b0464148c63`, database `gu2` |
 
 Three things this establishes beyond the deterministic selftests:
 
 - **New material is never born trusted.** Both providers landed `pending_test` even though this was a re-run over existing rows — a replacement does not inherit `active`. That re-run is also the rotation path, exercised.
 - **The Mongo source is `gu2.appointments`**, reached by the delivered identity, matching what the Traditional Gu team confirmed.
-- **Only identity metadata is readable without decrypting.** The stored `config_jsonb` carries project, client email, host and database. The private key and the password-bearing URI live in the encrypted column, which no read path in the codebase can select.
+- **Only identity metadata is readable without decrypting.** The stored `config_jsonb` carries project, client email, host and database — the Atlas host is digested in the committed artifact, since the evidence needs the cluster to be *stable*, not readable. The private key and the password-bearing URI live in `encrypted_secret_jsonb`. No **metadata** projection selects that column - `PUBLIC_COLUMNS` is a literal, so a future `select("*")` cannot widen it - while the **server-only runtime resolver** necessarily does select and decrypt it, which is how an adapter gets a credential at all. Those are different paths, and the distinction is the point: nothing that can reach a browser or a user JWT touches the column.
 
 The connection check distinguishes three outcomes rather than two. `unreachable` — a network-shaped failure occurring before any credential is evaluated — leaves the credential at `pending_test` rather than marking it `invalid`, because "this machine cannot reach the provider" is not evidence that a credential is bad. Both checks here returned `passed`.
 
