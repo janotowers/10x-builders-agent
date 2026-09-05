@@ -201,11 +201,14 @@ This path runs **only for RS-3 slices**. A slice that declared RS-1 or RS-2 does
 | `GUOS_STAGING_SUPABASE_PUBLISHABLE_KEY` | **variable** | that environment | Publishable by design — not a secret |
 | `GUOS_STAGING_SUPABASE_DATABASE_URL` | **secret** | that environment | Embeds the database password |
 | Branch protection on `main` | protection rule | Settings → Branches | Repository setting; also what makes the frozen-era bypass auditable |
+| `ENCRYPTION_KEY` for `staging` | **secret** | that environment | Application-level encryption key for `account_tool_secrets` / `organization_tool_secrets`. Must be the *same* 64-hex value as `GUOS_STAGING_ENCRYPTION_KEY` locally, or material stored by a script cannot be decrypted by a runtime |
 | A production environment | — | not yet | Deliberately absent until Gate B is authorized |
 
 Classifying public identifiers as secrets is not free: it makes them unreadable in logs and harder to debug for no security gain. Only the connection string is a secret here.
 
 Until the `staging` environment and its configuration exist, the delivery workflow fails closed. That is the intended behavior: document the control rather than weaken it.
+
+**There is currently no deployed Gu OS application runtime in staging.** "Staging" here means a hosted Supabase environment plus this GitHub Environment; neither workflow deploys the Next.js app. Two consequences worth keeping straight: a verification script executes the application code **in the operator's process**, not in a hosted runtime; and configuring `ENCRYPTION_KEY` as a `staging` environment secret does **not** by itself mean a runtime exists to consume it. When one is deployed, it must receive that same canonical value — otherwise it will fail to decrypt everything stored before it existed.
 
 **Reviewer policy.** Required reviewers on `staging` are an intentionally conservative starting point for v1. They can be relaxed later if evidence supports autonomous staging delivery — that is a governed decision, not a default. **Production release authority remains explicitly human-gated regardless**, and no amount of staging evidence changes that.
 

@@ -67,6 +67,13 @@ export {
   legacyLeadGetRecentMessages,
   propertyGetDetails,
 } from "./capabilities";
+/**
+ * Exported so a verification run can exercise the PRODUCT credential path -
+ * `organization_tool_secrets` -> decrypt -> adapter - rather than supplying a
+ * credential of its own. A run that supplies its own credential proves the
+ * adapters and proves nothing about credential resolution.
+ */
+export { resolveLegacySourceReaders } from "./runtime";
 
 export async function readLegacyLeadContext(
   ctx: GatewayCallerContext,

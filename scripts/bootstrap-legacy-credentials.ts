@@ -24,7 +24,7 @@
 // and lands back in `pending_test` until the connection check passes again.
 
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import {
   getOrganizationById,
@@ -94,6 +94,13 @@ function parseOrganization(argv: string[]): string {
     if (argv[i] === "--organization") return (argv[++i] ?? "").trim();
   }
   return "";
+}
+
+function parseNamed(argv: string[], flag: string): string | undefined {
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] === flag) return (argv[++i] ?? "").trim() || undefined;
+  }
+  return undefined;
 }
 
 /**
@@ -254,6 +261,9 @@ async function main(): Promise<void> {
   }
 
   // Read back through the public projection, which cannot select ciphertext.
+  // This read-back is the evidence that the `pending_test -> active` transition
+  // actually landed, rather than that the update call returned without error.
+  const stored: Record<string, unknown> = {};
   for (const provider of ["traditional_gu_firestore", "traditional_gu_mongo"] as const) {
     const row = await getOrganizationToolSecretPublic(db, { organizationId, provider });
     if (row) {
@@ -261,7 +271,46 @@ async function main(): Promise<void> {
         `  ${provider}: status=${row.status} checked=${row.last_checked_at ?? "never"}` +
           (row.last_error ? ` error=${row.last_error}` : "")
       );
+      stored[provider] = {
+        status: row.status,
+        lastCheckedAt: row.last_checked_at,
+        lastError: row.last_error,
+        // Identity metadata only. The ciphertext column is not selectable here.
+        config: row.config_jsonb,
+      };
     }
+  }
+
+  const jsonPath = parseNamed(argv, "--json");
+  if (jsonPath) {
+    writeFileSync(
+      jsonPath,
+      `${JSON.stringify(
+        {
+          slice: "SL-1",
+          step: "organization-scoped credential storage",
+          guOsEnvironment: target.name,
+          guOsProjectRef: target.projectRef,
+          legacyEnvironment: legacy.environment,
+          legacyFirestoreProject: legacy.firestore.projectId,
+          organizationId,
+          ranAt: new Date().toISOString(),
+          lifecycle:
+            "every stored credential lands `pending_test`; a real connection check per provider flips it to `active` or records `invalid`",
+          connectionChecks: {
+            traditional_gu_firestore: firestoreCheck,
+            traditional_gu_mongo: mongoCheck,
+          },
+          stored,
+        },
+        null,
+        2
+      )}
+`,
+      "utf8"
+    );
+    console.log(`
+evidence written to ${jsonPath}`);
   }
 }
 

@@ -201,7 +201,9 @@ export const FIRESTORE_APPOINTMENT_CONTRACT: SourceContract = {
 };
 
 /**
- * `gu2.appointments` - sample n=50, collection size ~9.4k.
+ * `gu2.appointments` - sample n=50, collection size ~9.4k. The database is
+ * `gu2`, confirmed with the Traditional Gu team; `bot` has no `appointments`
+ * collection.
  *
  * Eleven fields present on every sampled document. Post-visit evidence fields
  * (`property_was_visited`, `appointment_qualification`, `want_to_acquire`,

@@ -165,3 +165,27 @@ export async function getLegacyEventIngestionMode(
   );
   return oneOf(value, ["poll", "webhook"] as const, "poll");
 }
+
+/**
+ * Removes a flag row entirely.
+ *
+ * Distinct from setting `enabled: false`, and the difference matters for one
+ * specific case: a bounded verification run that had to switch a flag on must
+ * be able to put the Organization back exactly as it found it. If the row did
+ * not exist before the run, leaving `enabled: false` behind is still a hosted
+ * configuration change the run made and did not undo.
+ *
+ * Absence and `enabled: false` resolve identically at read time - every
+ * resolver in this module fails closed - so this never widens authority.
+ */
+export async function deleteOrganizationFlag(
+  db: DbClient,
+  params: { organizationId: string; flagKey: string }
+): Promise<void> {
+  const { error } = await db
+    .from("organization_feature_flags")
+    .delete()
+    .eq("organization_id", params.organizationId)
+    .eq("flag_key", params.flagKey);
+  if (error) throw error;
+}

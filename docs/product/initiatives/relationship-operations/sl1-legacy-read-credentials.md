@@ -38,24 +38,46 @@ Deliberately excluded, with reasons, in the same module: Mongo `property_data` (
 
 Beyond the allowlist, every read is contained by the Organization gate in [`authorization.ts`](../../../../apps/web/src/lib/legacy-gateway/authorization.ts): flags, active membership, the Organization's own `legacy_organization_key` binding, refusal when the requested identity is bound to another Organization, and — after the fetch, before anything is returned — resolution of the record's legacy owner back to the calling Organization.
 
-## 4. Correction: the appointments collection is in `gu2`, not `bot`
+## 4. The Mongo appointment source is `gu2.appointments` (legacy-owner confirmed)
 
-The provisioning scope recorded before issuance said the appointment record was "the `appointments` collection in the primary database (`MONGO_DB_NAME`)", and that `bot` is what `MONGO_DB_NAME` resolves to.
+The scope recorded before issuance placed the appointment record in "the `appointments` collection in the primary database (`MONGO_DB_NAME`)", and `MONGO_DB_NAME` does resolve to `bot`. The assumption that the collection lived there was simply wrong about the physical source: **`bot` has no `appointments` collection.**
 
-Verified first-hand on 2026-09-04 through the delivered identity: **`bot` has no `appointments` collection at all**. Appointments live in `gu2` — the guv3 runtime database — with roughly 9,400 documents. `bot` holds `chats`, `messages`, `property_data`, `users` and related collections; `gu2` holds the guv3 runtime, including `appointments`.
+The correct location was observed during execution on 2026-09-04 through the delivered identity, and then **confirmed directly with the Traditional Gu team member responsible for the source**. It is therefore legacy-owner-confirmed information, not an implementation inference:
 
-Two consequences worth stating plainly:
+> The Mongo appointment source required by SL-1 is **`gu2.appointments`** — the guv3 runtime database, roughly 9,400 documents.
 
-- **The accepted least-privilege deviation is what makes SL-1 work.** Its recorded rationale said `gu2` "holds reminder, template-retry, ads and bug-informer collections SL-1 never queries". That premise was wrong in the direction that matters: had the recommendation been followed exactly — a collection-level `find` on `bot.appointments` — SL-1 would have been unable to read appointments at all. The deviation is not merely tolerable here; without it the appointment capability has no source.
-- **The narrower grant is still the right target.** The correct minimal grant is a collection-level `find` on **`gu2.appointments`**. That is what should replace the current database-level grant if the deviation is tightened before its retirement condition.
+`bot` holds `chats`, `messages`, `property_data`, `users` and related collections; `gu2` holds the guv3 runtime, including `appointments`.
 
-The code allowlist follows the verified source; it names `gu2.appointments` and nothing else in Mongo.
+### Human revalidation of the temporary deviation, under the corrected fact
 
-## 5. Production boundary, as it now stands
+The deviation recorded in the Slice Plan was accepted while the source was believed to be `bot.appointments`. The human accountable for SL-1 revalidated it explicitly against the corrected fact on 2026-09-04, and that revalidation governs:
 
-The prerequisite record states that production IAM provisioning occurred but that no production data was read. That is still true of **Firestore**: the production key is issued and valid, and nothing in the setup path references it. It stays unwired until the hosted evidence run for SA-1.2/SA-1.3, which is the only step needing a real Alebrixe lead.
+- the appointment source SL-1 requires is **`gu2.appointments`**;
+- the current read-only identity **may continue to cover `bot` and `gu2`** for this bootstrap;
+- **no Mongo identity reprovisioning is required** merely because the source is `gu2` — the existing identity already reaches it;
+- this **remains a temporary bootstrap deviation**;
+- the **C6 retirement boundary is unchanged**.
 
-It is **no longer true of Mongo**, and the record needs that correction: there is only **one** Atlas cluster. There is no stage Mongo. The shape-discovery reads that produced the recorded contracts in [`source-contracts.ts`](../../../../apps/web/src/lib/legacy-gateway/source-contracts.ts) therefore read the production cluster — read-only, `find`/`estimatedDocumentCount` only, sampling field names and counts, with no value leaving the machine and nothing written. That is inside what the identity was issued for, and it has no prospect-facing effect, but "no production data read" is not an accurate description of the Mongo side and should not be carried forward as one.
+One consequence is worth stating for whoever revisits this: the correction makes the deviation **load-bearing rather than merely tolerable**. A grant confined to `bot` would not reach the appointment source at all, so the wider grant is what gives the capability a source. If the deviation is ever narrowed before its retirement condition — which the revalidation does not require — the minimal grant is a collection-level `find` on `gu2.appointments`.
+
+The code allowlist follows the confirmed source: it names `gu2.appointments` and nothing else in Mongo.
+
+## 5. Production boundary — what was read, and under what authority
+
+The prerequisite record states that production IAM provisioning occurred but that no production data was read. That remains true of **Firestore**: the production key stayed unwired until the authorized hosted evidence run of 2026-09-04 (recorded in [`sl1-hosted-evidence.md`](sl1-hosted-evidence.md)), which the human accountable authorized explicitly.
+
+The **Mongo** side needs completing rather than correcting, because that paragraph was written in Firestore terms. Firestore has two projects, so stage-versus-production is a meaningful distinction there. Mongo has **one** Atlas cluster and no stage equivalent, so every Mongo read SL-1 performs is by construction a read of that production cluster. The shape-discovery reads that produced the contracts in [`source-contracts.ts`](../../../../apps/web/src/lib/legacy-gateway/source-contracts.ts) were such reads: `find` and `estimatedDocumentCount` only, sampling field names and counts, nothing written, no value retained, no prospect-facing effect.
+
+**Those reads were inside approved SL-1 execution authority.** Four governing sources say so, and none of them is stretched to fit:
+
+| Source | What it establishes |
+|---|---|
+| Methodology §14.2 | "Behavior/authority mode is not Release Scope." `shadow` means no external effects. RS-3 is defined by what a **Gu OS** production *release* adds — production authorization, schema preflight, controlled deploy, post-release verification, canary/rollback. Reading a source system Gu OS does not own is none of those. |
+| Methodology §11.5 | Hosted verification adds "contract and pilot evidence a slice's DoD requires". Pilot evidence means the pilot's real records. The post-release layer runs against **production after a release** — a Gu OS release. |
+| Technical Plan §8 | The approved verification strategy *requires* "gateway adapters against recorded fixtures **+ a staging pass with pilot credentials**". Recording a fixture and passing with pilot credentials both require reading the real source. |
+| Slice Plan §4 + SL-1 DoD | The case-B prerequisite provisioned this identity for exactly this purpose, and the DoD requires a contract fixture for `appointment_get` — impossible to record without reading the appointment source. |
+
+**A narrow documentation ambiguity, logged rather than resolved unilaterally.** What no governing source states is how the word "production" applies to a **legacy source system** Gu OS reads but does not own or deploy to. Every definition in the Methodology and the release-path playbook is written for Gu OS's own deployment target, which is why the prerequisite record's production-boundary paragraph addressed Firestore projects and was silent on the single Atlas cluster. A later methodology refinement could add one sentence distinguishing *a Gu OS production release* from *reading an external system's production data*. That is a process improvement, not a finding against this Slice.
 
 ## 6. Storage, rotation and the operator path
 

@@ -80,7 +80,7 @@ export const ALLOWED_SOURCE_PATHS: readonly AllowedSourcePath[] = [
     path: "gu2.appointments",
     capabilities: ["appointment_get"],
     rationale:
-      "Appointment persistence is not atomic across stores (audit 11.3): a Firestore-only read would silently miss appointments that landed only in Mongo. This is the only SL-1 capability that needs Mongo at all. The database is `gu2`, the guv3 runtime database - NOT `bot`, which has no `appointments` collection at all. Verified first-hand against the delivered read identity on 2026-09-04; see the Slice Plan correction.",
+      "Appointment persistence is not atomic across stores (audit 11.3): a Firestore-only read would silently miss appointments that landed only in Mongo. This is the only SL-1 capability that needs Mongo at all. The database is `gu2`, the guv3 runtime database - NOT `bot`, which has no `appointments` collection. Confirmed with the Traditional Gu team on 2026-09-04 after first-hand observation; the pre-issuance scope had assumed `bot`.",
   },
 ] as const;
 

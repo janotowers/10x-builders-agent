@@ -32,8 +32,11 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import {
+  deleteOrganizationFlag,
   getOrganizationById,
+  getOrganizationFlag,
   getOrganizationToolSecretPublic,
+  setOrganizationFlag,
   type DbClient,
 } from "@agents/db";
 import {
@@ -45,6 +48,7 @@ import {
   legacyLeadGetRecentMessages,
   propertyGetDetails,
   closeLegacySourceConnections,
+  resolveLegacySourceReaders,
 } from "../apps/web/src/lib/legacy-gateway";
 import {
   resolveTarget,
@@ -53,6 +57,7 @@ import {
   parseTargetArgs,
 } from "./lib/target-env";
 import {
+  LEGACY_FIRESTORE_PROJECTS,
   assertProductionReadAcknowledged,
   describeLegacyTarget,
   parseLegacyArgs,
@@ -77,6 +82,12 @@ function redact(value: string | null): string | null {
   if (!value) return null;
   return `sha256:${createHash("sha256").update(value).digest("hex").slice(0, 16)}`;
 }
+
+/**
+ * Set once the run has switched a flag on, so a crash restores it too. A
+ * bounded activation that only unwinds on the happy path is not bounded.
+ */
+let pendingFlagRestore: (() => Promise<string>) | null = null;
 
 function parseNamed(argv: string[], flag: string): string | undefined {
   for (let i = 0; i < argv.length; i += 1) {
@@ -108,11 +119,25 @@ async function main(): Promise<void> {
         "lead, and there is no meaningful hosted evidence without one."
     );
   }
-  // Storing the Organization's credentials is a separate step that needs the
-  // target environment's encryption key. A run may legitimately precede it -
-  // the readers here are built from the declared legacy target - but that has
-  // to be declared, not inferred from a failing check.
+  // By DEFAULT this run resolves its readers through the Organization-scoped
+  // credential path, because that is the path the product uses and the one the
+  // Definition of Done requires evidence for. Reading through the declared
+  // legacy target instead bypasses `organization_tool_secrets` entirely, so it
+  // proves the adapters and proves nothing about credential resolution - it is
+  // available, but only as an explicit declaration.
+  const readersFromDeclaredTarget = argv.includes("--readers-from-declared-target");
   const credentialsNotYetStored = argv.includes("--credentials-not-yet-stored");
+  if (credentialsNotYetStored && !readersFromDeclaredTarget) {
+    throw new Error(
+      "--credentials-not-yet-stored requires --readers-from-declared-target: without a " +
+        "stored credential there is nothing for the Organization-scoped path to resolve."
+    );
+  }
+  // A bounded activation: the gateway is inert unless `relationship_ops` is on,
+  // and the approved Slice does not require the flag to stay on afterwards.
+  // With this flag the run switches it on and restores the Organization to
+  // exactly the state it found - including removing a row that did not exist.
+  const activateFlagForRun = argv.includes("--activate-flag-for-run");
 
   const target = resolveTarget(targetArgs);
   assertBinding(target);
@@ -151,40 +176,118 @@ async function main(): Promise<void> {
       "declared-incomplete",
       "Organization-scoped credential storage is declared NOT yet configured",
       credential?.status !== "active",
-      `status ${credential?.status ?? "absent"} - the runtime credential path is evidenced ` +
-        "deterministically instead; this run reads through the declared legacy target"
+      `status ${credential?.status ?? "absent"} - this run reads through the declared ` +
+        "legacy target and therefore evidences the adapters, NOT credential resolution"
     );
   } else {
     record(
       "setup",
       "Organization holds an active traditional_gu_firestore credential",
       credential?.status === "active",
-      `status ${credential?.status ?? "absent"}`
+      `status ${credential?.status ?? "absent"}` +
+        (credential?.last_checked_at
+          ? `, connection-checked ${credential.last_checked_at}`
+          : ", never connection-checked")
     );
   }
 
-  // The readers are built from the DECLARED legacy target rather than from the
-  // stored credential, so the evidence states exactly which identity read, and
-  // a mismatch between the two is visible instead of silent.
-  const firestore = createFirestoreReader({
-    organizationId,
-    credentials: {
-      projectId: legacy.firestore.projectId,
-      clientEmail: legacy.firestore.clientEmail,
-      privateKey: String(legacy.firestore.serviceAccount.private_key ?? ""),
-    },
-  });
-  const mongo = legacy.mongo
-    ? createMongoReader({
-        organizationId,
-        credentials: { uri: legacy.mongo.uri, database: legacy.mongo.database },
-      })
-    : null;
-  const ctx = { db, organizationId };
-  const readers = { firestore, mongo };
-  const env = { LEGACY_GATEWAY_ENABLED: "true" };
+  // ── Bounded flag activation ──────────────────────────────────────
+  // Recorded before anything changes, so restoration is against an observed
+  // prior state rather than an assumed one.
+  const priorFlag = await getOrganizationFlag(db, organizationId, "relationship_ops");
+  const priorFlagState = priorFlag
+    ? { present: true, enabled: priorFlag.enabled }
+    : { present: false, enabled: false };
+  let flagActivatedByThisRun = false;
+  if (activateFlagForRun && !priorFlagState.enabled) {
+    await setOrganizationFlag(db, {
+      organizationId,
+      flagKey: "relationship_ops",
+      enabled: true,
+    });
+    flagActivatedByThisRun = true;
+    pendingFlagRestore = () => restoreFlag();
+    console.log(
+      `  NOTE  relationship_ops activated for this run only (prior: ` +
+        `${priorFlagState.present ? `present, enabled=${priorFlagState.enabled}` : "absent"})`
+    );
+  }
 
+  const restoreFlag = async (): Promise<string> => {
+    if (!flagActivatedByThisRun) return "not touched by this run";
+    if (!priorFlagState.present) {
+      await deleteOrganizationFlag(db, { organizationId, flagKey: "relationship_ops" });
+      return "row removed - restored to absent, exactly as found";
+    }
+    await setOrganizationFlag(db, {
+      organizationId,
+      flagKey: "relationship_ops",
+      enabled: priorFlagState.enabled,
+    });
+    return `restored to enabled=${priorFlagState.enabled}`;
+  };
+
+  const ctx = { db, organizationId };
+  const env = { LEGACY_GATEWAY_ENABLED: "true" };
   const evidence: Record<string, unknown> = {};
+
+  // ── Reader source ────────────────────────────────────────────────
+  let readers;
+  if (readersFromDeclaredTarget) {
+    readers = {
+      firestore: createFirestoreReader({
+        organizationId,
+        credentials: {
+          projectId: legacy.firestore.projectId,
+          clientEmail: legacy.firestore.clientEmail,
+          privateKey: String(legacy.firestore.serviceAccount.private_key ?? ""),
+        },
+      }),
+      mongo: legacy.mongo
+        ? createMongoReader({
+            organizationId,
+            credentials: { uri: legacy.mongo.uri, database: legacy.mongo.database },
+          })
+        : null,
+    };
+    record(
+      "declared-incomplete",
+      "readers built from the DECLARED legacy target, bypassing credential resolution",
+      true,
+      "explicitly declared; this run makes no claim about organization_tool_secrets"
+    );
+  } else {
+    // The product path: credentials resolved per Organization out of
+    // `organization_tool_secrets`, decrypted server-side, adapters built from
+    // what comes back. Nothing here supplies a credential.
+    readers = await resolveLegacySourceReaders({
+      db,
+      organizationId,
+      capability: "legacy_lead_get_context",
+      externalId: legacyLeadId,
+      needsMongo: Boolean(legacyDealId),
+    });
+    record(
+      "SA-1.2",
+      "readers resolved through the Organization-scoped credential path",
+      true,
+      "organization_tool_secrets -> decrypt -> adapter; no credential supplied by this run"
+    );
+    // The stored credential must be the identity the run declares it is. A
+    // mismatch would produce evidence labelled with the wrong environment.
+    const storedProject = (credential?.config_jsonb as { project_id?: string } | undefined)
+      ?.project_id;
+    record(
+      "SA-1.2",
+      "the stored credential binds to the declared legacy environment",
+      storedProject === LEGACY_FIRESTORE_PROJECTS[legacy.environment],
+      `stored project ${storedProject ?? "unknown"}, declared ${legacy.environment} ` +
+        `= ${LEGACY_FIRESTORE_PROJECTS[legacy.environment]}`
+    );
+  }
+  const readerSource = readersFromDeclaredTarget
+    ? "declared_target"
+    : "organization_credential";
 
   // ── SA-1.2 ───────────────────────────────────────────────────────
   try {
@@ -368,6 +471,17 @@ async function main(): Promise<void> {
     }
   }
 
+  const flagRestoration = await restoreFlag();
+  pendingFlagRestore = null;
+  if (flagActivatedByThisRun) {
+    record(
+      "setup",
+      "relationship_ops restored to its pre-run state",
+      true,
+      flagRestoration
+    );
+  }
+
   await closeLegacySourceConnections();
 
   const required = checks.filter(
@@ -383,14 +497,34 @@ async function main(): Promise<void> {
     legacyReadIdentity: legacy.firestore.clientEmail,
     organizationId,
     ranAt: new Date().toISOString(),
+    // Where each moving part actually lives, because "staging" alone is
+    // ambiguous across four different things in this run.
+    topology: {
+      verifierProcess: "operator workstation (this machine)",
+      guOsHostedState: `Gu OS ${target.name} (Supabase project ${target.projectRef}) - the only place this run mutates anything`,
+      legacySource: `Traditional Gu ${legacy.environment} (${legacy.firestore.projectId}) - READ ONLY`,
+      legacyMongo: legacy.mongo
+        ? "single Atlas cluster, production by construction - READ ONLY"
+        : "not configured for this run",
+      guOsApplicationRuntime:
+        "none deployed in this environment; the gateway code runs in this verifier process",
+    },
+    readerSource,
+    relationshipOpsFlag: {
+      priorState: priorFlagState.present
+        ? `present, enabled=${priorFlagState.enabled}`
+        : "absent",
+      activatedByThisRun: flagActivatedByThisRun,
+      restoration: flagRestoration,
+    },
     required: { total: required.length, passed: required.length - failed.length },
     optional: checks.filter((check) => check.assertion === "optional"),
     checks,
     evidence,
     declaredIncomplete: checks.filter((c) => c.assertion === "declared-incomplete"),
     notExercised: [
-      credentialsNotYetStored
-        ? "the Organization-scoped credential path (organization_tool_secrets) - declared not yet configured for this environment"
+      readersFromDeclaredTarget
+        ? "the Organization-scoped credential path (organization_tool_secrets) - this run read through the declared legacy target instead"
         : null,
       legacyDealId ? null : "appointment_get against real hosted data",
       legacyPropertyId ? null : "property_get_details against real hosted data",
@@ -409,6 +543,17 @@ async function main(): Promise<void> {
 }
 
 void main().catch(async (error) => {
+  if (pendingFlagRestore) {
+    // The run failed after switching a flag on. Restoring it is not optional.
+    try {
+      console.error(`verify-legacy-reads: restoring relationship_ops - ${await pendingFlagRestore()}`);
+    } catch (restoreError) {
+      console.error(
+        "verify-legacy-reads: COULD NOT RESTORE relationship_ops - restore it manually:",
+        (restoreError as Error).message
+      );
+    }
+  }
   await closeLegacySourceConnections().catch(() => undefined);
   console.error(`verify-legacy-reads: ${(error as Error).message}`);
   process.exitCode = 1;
