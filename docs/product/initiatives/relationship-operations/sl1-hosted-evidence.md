@@ -1,6 +1,6 @@
 # SL-1 — hosted evidence record
 
-> **Status:** **RS-2 hosted evidence complete.** SA-1.2 and SA-1.3 satisfied on 2026-09-05 through the Organization-scoped credential path, with the `pending_test → active` lifecycle observed in hosted staging. SL-1 is **not Done**: the required deterministic CI evidence for the landing commit is the remaining gate — see §7.
+> **Status:** **RS-2 hosted evidence — complete and closed.** SA-1.2 and SA-1.3 were satisfied on 2026-09-05 through the Organization-scoped credential path, with the `pending_test → active` lifecycle observed in hosted staging. This is the record of what those runs established; SL-1's completion is recorded in [`slice-plan.md`](slice-plan.md) §6.
 > **Artifacts:** [`evidence/sl1-credential-lifecycle-2026-09-05.json`](evidence/sl1-credential-lifecycle-2026-09-05.json) · [`evidence/sl1-hosted-reads-2026-09-05-organization-credential.json`](evidence/sl1-hosted-reads-2026-09-05-organization-credential.json) · preliminary run: [`evidence/sl1-hosted-reads-2026-09-04.json`](evidence/sl1-hosted-reads-2026-09-04.json)
 > **Governing contract:** [`slice-plan.md`](slice-plan.md) §4, SL-1 Slice Acceptance Contract.
 > **Commands:** `npm run bootstrap:legacy-credentials`, then `npm run verify:legacy-reads` — see [`release-path-playbook.md`](../../../development/release-path-playbook.md) §4.1 and §5.
@@ -87,12 +87,13 @@ Kept, and clearly classified. It passed 9 of 9 checks against the same lead but 
 
 The verifier now defaults to the Organization-scoped path; reading from the declared target is an explicit opt-out that refuses to combine with a silent assumption.
 
-## 7. Why SL-1 is still not Done
+## 7. What this record does and does not settle
 
-The Slice Acceptance Contract (SA-1.1 … SA-1.7) and the Definition of Done are satisfied, and RS-2's hosted evidence now exists. One gate remains:
+This document is **evidence, not status**. It states what two hosted runs established, on which environments, with which identities — facts that do not change afterwards.
 
-**The required deterministic CI evidence.** RS-2 is defined as "RS-1, plus the hosted/staging evidence required by the Slice Acceptance Contract" (Methodology §14.2), and RS-1 is "appropriate local verification plus **the required deterministic CI evidence**". Everything is green locally — validators, type-check, lint and the full `test:selftests` suite; `test:rls` needs a disposable PostgreSQL and runs in CI.
+Two things it deliberately leaves to their owners:
 
-At the time this hosted evidence was captured, deterministic CI evidence was still outstanding. **CI / PR execution state is owned by GitHub and is not duplicated here** (Methodology §19.1). **SL-1 cannot be declared Done until the required CI evidence for the landing commit is green.**
+- **Completion.** Whether the Slice is Done is a judgement against the Acceptance Contract, the Definition of Done and the declared Release Scope, and it belongs to the Done record in [`slice-plan.md`](slice-plan.md) §6. That record cites this evidence; it is not written here.
+- **CI and PR state.** RS-2 is "RS-1 plus hosted evidence", and RS-1 includes the required deterministic CI evidence — which runs against a specific commit and is owned by GitHub (Methodology §19.1). No SHA, run number or check verdict is duplicated into this file, because a document that mirrors CI is stale the moment the head moves.
 
-What remains after that is the **Done record** in [`slice-plan.md`](slice-plan.md) §6 — environment reached, Release Scope achieved, material assertions verified, material things intentionally not exercised — plus the §5 register actuals for the calibration series that SL-1 opens.
+What this evidence supports is narrower and durable: on 2026-09-05, reading through the Organization-scoped credential path, a real Alebrixe lead and its conversation were read from Traditional Gu production into Gu OS staging, with provenance, freshness and Organization containment — and the two credentials reached `active` only after a real connection check proved them.
