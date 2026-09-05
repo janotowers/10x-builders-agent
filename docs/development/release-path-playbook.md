@@ -107,6 +107,7 @@ A Gu OS environment and a Traditional Gu source environment are **two separate t
 | `GUOS_LEGACY_PROD_FIRESTORE_KEY_FILE` | path to the production read identity's key |
 | `GUOS_LEGACY_MONGO_URI` | Atlas connection string for the read identity |
 | `GUOS_LEGACY_MONGO_DB` | database holding `appointments` (`gu2`) |
+| `GUOS_LEGACY_MONGO_URI_DIRECT` | optional seedlist form, used **only** for the connection check on machines whose resolver cannot look up `mongodb+srv`; never stored |
 | `GUOS_<ENV>_ENCRYPTION_KEY` | the key the declared environment's runtime decrypts with; required only when storing credentials |
 
 There is **no default legacy environment**: one of the two Firestore projects is production, and "whichever was configured" is not an acceptable answer to which project a read just touched. Pass `--legacy-env stage|prod`. The key file must bind to that environment's project or the run stops, and a production read additionally requires `--i-understand-production-read`.

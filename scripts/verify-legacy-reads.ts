@@ -55,6 +55,7 @@ import {
   assertBinding,
   describeTarget,
   parseTargetArgs,
+  resolveEncryptionKeyForTarget,
 } from "./lib/target-env";
 import {
   LEGACY_FIRESTORE_PROJECTS,
@@ -259,7 +260,13 @@ async function main(): Promise<void> {
   } else {
     // The product path: credentials resolved per Organization out of
     // `organization_tool_secrets`, decrypted server-side, adapters built from
-    // what comes back. Nothing here supplies a credential.
+    // what comes back. Nothing here supplies a credential - only the key the
+    // declared environment encrypts with, which is what makes the decrypt half
+    // of that path real rather than simulated.
+    process.env.ENCRYPTION_KEY = resolveEncryptionKeyForTarget(
+      targetArgs.envFile,
+      target.name
+    );
     readers = await resolveLegacySourceReaders({
       db,
       organizationId,

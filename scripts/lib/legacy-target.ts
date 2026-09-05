@@ -51,8 +51,24 @@ export interface LegacySourceTarget {
     serviceAccount: Record<string, unknown>;
   };
   mongo: {
+    /** The connection string that gets STORED. Always the configured form. */
     uri: string;
     database: string;
+    /**
+     * Optional alternative connection string used ONLY for the connection
+     * check, never stored.
+     *
+     * It exists for one narrow situation: a machine whose resolver refuses
+     * direct DNS cannot look up the `mongodb+srv` SRV record, so the driver
+     * fails before it ever authenticates. Without this, an operator on such a
+     * machine could not distinguish "this credential is rejected" from "this
+     * laptop cannot resolve the hostname" - and would end up recording a
+     * perfectly good credential as invalid.
+     *
+     * It must reach the same cluster with the same credential. The durable,
+     * portable SRV form is what a real runtime uses and what is stored.
+     */
+    checkUri?: string;
   } | null;
 }
 
@@ -148,9 +164,10 @@ export function resolveLegacyTarget(
   // oversight.
   const uri = env.GUOS_LEGACY_MONGO_URI?.trim();
   const database = env.GUOS_LEGACY_MONGO_DB?.trim();
+  const checkUri = env.GUOS_LEGACY_MONGO_URI_DIRECT?.trim();
   let mongo: LegacySourceTarget["mongo"] = null;
   if (uri && database) {
-    mongo = { uri, database };
+    mongo = { uri, database, checkUri: checkUri || undefined };
   } else if (options.requireMongo) {
     throw new Error(
       "FAIL CLOSED - Mongo is required for this run but is not configured. " +
@@ -176,7 +193,12 @@ export function describeLegacyTarget(target: LegacySourceTarget): string {
   return (
     `legacy env=${target.environment} firestore-project=${target.firestore.projectId} ` +
     `identity=${target.firestore.clientEmail} ` +
-    `mongo=${target.mongo ? `database ${target.mongo.database}, credential present` : "absent"}`
+    `mongo=${
+      target.mongo
+        ? `database ${target.mongo.database}, credential present` +
+          (target.mongo.checkUri ? ", resolver-independent check form configured" : "")
+        : "absent"
+    }`
   );
 }
 

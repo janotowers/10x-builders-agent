@@ -92,10 +92,14 @@ npx tsx scripts/bootstrap-legacy-credentials.ts --env-file .env.staging.local --
 
 Dry-run is the default. `--apply` stores, and every stored credential lands in `pending_test` — including a replacement, because new material has not been proven and inheriting `active` would assert exactly what was not checked. The script then performs one narrow read per provider and flips `pending_test → active`, or records `invalid` with the reason. **Rotation is the same command run again.**
 
+Both providers were stored and proven against Gu OS staging on 2026-09-05, with the transition observed rather than inferred; see [`sl1-hosted-evidence.md`](sl1-hosted-evidence.md) §2.
+
 Operational notes:
 
 - `GUOS_<ENV>_ENCRYPTION_KEY` must be the key the target environment's runtime decrypts with. An ambient `ENCRYPTION_KEY` is refused: material encrypted with a developer's local key stores cleanly and then fails to decrypt where it is needed. It is required only on `--apply`.
-- A machine whose resolver refuses direct DNS cannot look up `mongodb+srv` records. Supply a non-SRV seedlist URI there. The Mongo connection check treats a zero-document `appointments` as a **failure**, because that is precisely how the `bot`-versus-`gu2` mistake presents.
+- A machine whose resolver refuses direct DNS cannot look up `mongodb+srv` records. Set `GUOS_LEGACY_MONGO_URI_DIRECT` to an equivalent seedlist URI: it is used **only for the connection check** and is never stored, so what lands in `organization_tool_secrets` stays the portable SRV form a real runtime would use.
+- The check reports three outcomes, not two. `unreachable` — a network-shaped failure occurring before any credential is evaluated — leaves the credential at `pending_test` rather than marking it `invalid`, because "this machine cannot reach the provider" is not evidence that a credential is bad.
+- The Mongo check treats a zero-document `appointments` as a **failure**, because that is precisely how a wrong database name presents.
 - Local key material is git-ignored (`gu-os-sl1-reader.*.json`, `*.password.txt`) and referenced by path, so no key value sits inside an environment value. `git clean -fdx` removes ignored files too — keep a copy outside the repo.
 
 ## 7. Retirement

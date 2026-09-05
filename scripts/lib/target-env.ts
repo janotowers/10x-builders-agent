@@ -216,3 +216,36 @@ export function parseTargetArgs(argv: string[]): ResolveOptions & { apply: boole
   }
   return { envFile, envName, apply };
 }
+
+/**
+ * Application encryption key for the DECLARED environment, read as
+ * `GUOS_<ENV>_ENCRYPTION_KEY`.
+ *
+ * An ambient `ENCRYPTION_KEY` is deliberately not accepted. Material encrypted
+ * with a developer's local key stores cleanly and then fails to decrypt in the
+ * environment that has to use it — a credential that looks configured and is
+ * not. Binding the key to the declared target is what makes that impossible,
+ * and it is the same fail-closed rule the rest of this module applies.
+ *
+ * The value is never returned to a caller that logs; callers assign it to
+ * `process.env.ENCRYPTION_KEY` and nothing else.
+ */
+export function resolveEncryptionKeyForTarget(
+  envFile: string | undefined,
+  envName: string
+): string {
+  const key = `GUOS_${envName.toUpperCase()}_ENCRYPTION_KEY`;
+  const fromFile = envFile ? parseEnvFile(envFile)[key] : undefined;
+  const resolved = (process.env[key] ?? fromFile ?? "").trim();
+  if (!resolved) {
+    throw new Error(
+      `FAIL CLOSED — ${key} is not set. Organization-scoped credentials are encrypted at ` +
+        `rest with the SAME key the "${envName}" runtime decrypts with; an ambient ` +
+        "ENCRYPTION_KEY is not accepted."
+    );
+  }
+  if (!/^[0-9a-f]{64}$/i.test(resolved)) {
+    throw new Error(`${key} must be 64 hex characters (32 bytes).`);
+  }
+  return resolved;
+}

@@ -24,7 +24,7 @@
 // and lands back in `pending_test` until the connection check passes again.
 
 import { createRequire } from "node:module";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import {
   getOrganizationById,
@@ -34,8 +34,15 @@ import {
   parseTraditionalGuMongoMaterial,
   upsertOrganizationToolSecret,
   type DbClient,
+  type OrganizationToolSecretPublic,
 } from "@agents/db";
-import { resolveTarget, assertBinding, describeTarget, parseTargetArgs } from "./lib/target-env";
+import {
+  resolveTarget,
+  assertBinding,
+  describeTarget,
+  parseTargetArgs,
+  resolveEncryptionKeyForTarget,
+} from "./lib/target-env";
 import {
   assertProductionReadAcknowledged,
   describeLegacyTarget,
@@ -44,50 +51,6 @@ import {
 } from "./lib/legacy-target";
 
 const require_ = createRequire(import.meta.url);
-
-/**
- * The encryption key is resolved from the DECLARED environment's own file, as
- * `GUOS_<ENV>_ENCRYPTION_KEY`, and never from an ambient `ENCRYPTION_KEY`.
- *
- * This is not ceremony. Material encrypted with a developer's local key would
- * be stored successfully and then fail to decrypt in the environment that has
- * to use it - a credential that looks configured and is not. Binding the key to
- * the target is what makes that impossible.
- */
-function resolveEncryptionKey(envFile: string | undefined, envName: string): string {
-  const key = `GUOS_${envName.toUpperCase()}_ENCRYPTION_KEY`;
-  let fromFile: string | undefined;
-  if (envFile) {
-    for (const raw of readFileSync(envFile, "utf8").split(/\r?\n/)) {
-      const line = raw.trim();
-      if (!line || line.startsWith("#")) continue;
-      const i = line.indexOf("=");
-      if (i <= 0) continue;
-      if (line.slice(0, i).trim() !== key) continue;
-      let value = line.slice(i + 1).trim();
-      if (
-        (value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))
-      ) {
-        value = value.slice(1, -1);
-      }
-      fromFile = value;
-    }
-  }
-  const resolved = (process.env[key] ?? fromFile ?? "").trim();
-  if (!resolved) {
-    throw new Error(
-      `FAIL CLOSED - ${key} is not set. Credential material is encrypted at rest with the ` +
-        `SAME key the "${envName}" runtime decrypts with; an ambient ENCRYPTION_KEY is ` +
-        "deliberately not accepted, because material encrypted with the wrong key stores " +
-        "cleanly and then fails to decrypt where it is needed."
-    );
-  }
-  if (resolved.length !== 64) {
-    throw new Error(`${key} must be 64 hex characters (32 bytes).`);
-  }
-  return resolved;
-}
 
 function parseOrganization(argv: string[]): string {
   for (let i = 0; i < argv.length; i += 1) {
@@ -104,6 +67,28 @@ function parseNamed(argv: string[], flag: string): string | undefined {
 }
 
 /**
+ * The outcome of a connection check, in three states rather than two.
+ *
+ * `unreachable` exists because "the provider rejected this credential" and
+ * "this machine could not reach the provider" are different facts with
+ * different consequences, and collapsing them would record a perfectly good
+ * credential as `invalid` because of a local network condition. Only `failed`
+ * marks a credential invalid; `unreachable` leaves it `pending_test`, which is
+ * exactly what it is - unproven.
+ */
+type CheckOutcome = {
+  outcome: "passed" | "failed" | "unreachable";
+  detail: string;
+};
+
+/** Network-shaped failures that happen before any credential is evaluated. */
+function looksUnreachable(message: string): boolean {
+  return /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|querySrv|getaddrinfo|ETIMEDOUT|ENETUNREACH|socket hang up/i.test(
+    message
+  );
+}
+
+/**
  * One narrow read per provider, to prove the credential actually works before
  * it is marked `active`. Deliberately the cheapest possible read: existence of
  * an allowlisted collection, never a document's contents.
@@ -111,21 +96,25 @@ function parseNamed(argv: string[], flag: string): string | undefined {
 async function checkFirestore(
   keyFilePath: string,
   projectId: string
-): Promise<{ ok: boolean; detail: string }> {
+): Promise<CheckOutcome> {
   try {
     const { Firestore } = require_("@google-cloud/firestore") as typeof import("@google-cloud/firestore");
     const db = new Firestore({ projectId, keyFilename: keyFilePath });
     const snapshot = await db.collection("leads").limit(1).get();
-    return { ok: true, detail: `leads readable (${snapshot.size} document sampled)` };
+    return {
+      outcome: "passed",
+      detail: `leads readable (${snapshot.size} document sampled)`,
+    };
   } catch (error) {
-    return { ok: false, detail: (error as Error).message };
+    const message = (error as Error).message;
+    return {
+      outcome: looksUnreachable(message) ? "unreachable" : "failed",
+      detail: message,
+    };
   }
 }
 
-async function checkMongo(
-  uri: string,
-  database: string
-): Promise<{ ok: boolean; detail: string }> {
+async function checkMongo(uri: string, database: string): Promise<CheckOutcome> {
   const { MongoClient } = require_("mongodb") as typeof import("mongodb");
   const client = new MongoClient(uri, { serverSelectionTimeoutMS: 15000 });
   try {
@@ -136,19 +125,55 @@ async function checkMongo(
       .estimatedDocumentCount();
     if (count === 0) {
       // An empty collection is indistinguishable from a missing one here, and
-      // `bot` versus `gu2` is exactly the mistake that made this check worth
-      // having. Say so rather than reporting a confident success.
+      // the database name is exactly the thing that was wrong before. Say so
+      // rather than reporting a confident success.
       return {
-        ok: false,
+        outcome: "failed",
         detail: `${database}.appointments answered with 0 documents - check the database name`,
       };
     }
-    return { ok: true, detail: `${database}.appointments reachable (~${count} documents)` };
+    return {
+      outcome: "passed",
+      detail: `${database}.appointments reachable (~${count} documents)`,
+    };
   } catch (error) {
-    return { ok: false, detail: (error as Error).message };
+    const message = (error as Error).message;
+    return {
+      outcome: looksUnreachable(message) ? "unreachable" : "failed",
+      detail: message,
+    };
   } finally {
     await client.close().catch(() => undefined);
   }
+}
+
+/**
+ * Turns a check outcome into the credential's lifecycle state.
+ *
+ *   passed      -> active
+ *   failed      -> invalid, with the reason
+ *   unreachable -> left at `pending_test`. It is unproven, not broken, and
+ *                  calling it invalid would be a claim the check cannot make.
+ */
+async function applyCheckOutcome(
+  db: DbClient,
+  organizationId: string,
+  provider: "traditional_gu_firestore" | "traditional_gu_mongo",
+  check: CheckOutcome
+): Promise<OrganizationToolSecretPublic | null> {
+  if (check.outcome === "unreachable") {
+    console.log(
+      `  leaving ${provider} at pending_test: the provider could not be reached from here, ` +
+        "which is not evidence that the credential is invalid"
+    );
+    return getOrganizationToolSecretPublic(db, { organizationId, provider });
+  }
+  return markOrganizationToolSecretTested(db, {
+    organizationId,
+    provider,
+    ok: check.outcome === "passed",
+    error: check.outcome === "passed" ? null : check.detail,
+  });
 }
 
 async function main(): Promise<void> {
@@ -201,10 +226,12 @@ async function main(): Promise<void> {
     legacy.firestore.keyFilePath,
     firestoreMaterial.config.project_id
   );
-  console.log(`  connection check: ${firestoreCheck.ok ? "PASS" : "FAIL"} - ${firestoreCheck.detail}`);
+  console.log(
+    `  connection check: ${firestoreCheck.outcome.toUpperCase()} - ${firestoreCheck.detail}`
+  );
 
   // ── Mongo ────────────────────────────────────────────────────────
-  let mongoCheck: { ok: boolean; detail: string } | null = null;
+  let mongoCheck: CheckOutcome | null = null;
   let mongoMaterial: ReturnType<typeof parseTraditionalGuMongoMaterial> | null = null;
   if (legacy.mongo) {
     mongoMaterial = parseTraditionalGuMongoMaterial({
@@ -214,8 +241,16 @@ async function main(): Promise<void> {
     console.log(
       `\ntraditional_gu_mongo: host=${mongoMaterial.config.host} database=${mongoMaterial.config.database}`
     );
-    mongoCheck = await checkMongo(legacy.mongo.uri, legacy.mongo.database);
-    console.log(`  connection check: ${mongoCheck.ok ? "PASS" : "FAIL"} - ${mongoCheck.detail}`);
+    // The check may use a resolver-independent connection form; what gets
+    // STORED is always the configured (portable) URI.
+    mongoCheck = await checkMongo(
+      legacy.mongo.checkUri ?? legacy.mongo.uri,
+      legacy.mongo.database
+    );
+    console.log(
+      `  connection check: ${mongoCheck.outcome.toUpperCase()} - ${mongoCheck.detail}` +
+        (legacy.mongo.checkUri ? " [via the resolver-independent check form]" : "")
+    );
   } else {
     console.log("\ntraditional_gu_mongo: not configured - skipping (only appointment_get needs it)");
   }
@@ -225,10 +260,18 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Status observed immediately after storage, before any transition, so the
+  // lifecycle is evidenced as a transition rather than inferred from its end
+  // state.
+  const lifecycleObserved: Record<string, { afterUpsert: string | null }> = {};
+
   // Bind the encryption key to the declared target. Resolved here rather than
   // up front so a dry run - which validates the material and the connectivity
   // and stores nothing - does not require the deployment key at all.
-  process.env.ENCRYPTION_KEY = resolveEncryptionKey(targetArgs.envFile, target.name);
+  process.env.ENCRYPTION_KEY = resolveEncryptionKeyForTarget(
+    targetArgs.envFile,
+    target.name
+  );
 
   await upsertOrganizationToolSecret(db, {
     organizationId,
@@ -236,13 +279,23 @@ async function main(): Promise<void> {
     config: firestoreMaterial.config as unknown as Record<string, unknown>,
     secret: firestoreMaterial.secret as unknown as Record<string, unknown>,
   });
-  const firestoreRow = await markOrganizationToolSecretTested(db, {
+  const firestoreAfterUpsert = await getOrganizationToolSecretPublic(db, {
     organizationId,
     provider: "traditional_gu_firestore",
-    ok: firestoreCheck.ok,
-    error: firestoreCheck.ok ? null : firestoreCheck.detail,
   });
-  console.log(`\nstored traditional_gu_firestore -> status ${firestoreRow?.status}`);
+  lifecycleObserved.traditional_gu_firestore = {
+    afterUpsert: firestoreAfterUpsert?.status ?? null,
+  };
+  console.log(
+    `\nafter upsert  traditional_gu_firestore -> status ${firestoreAfterUpsert?.status}`
+  );
+  const firestoreRow = await applyCheckOutcome(
+    db,
+    organizationId,
+    "traditional_gu_firestore",
+    firestoreCheck
+  );
+  console.log(`after check   traditional_gu_firestore -> status ${firestoreRow?.status}`);
 
   if (mongoMaterial && mongoCheck) {
     await upsertOrganizationToolSecret(db, {
@@ -251,13 +304,21 @@ async function main(): Promise<void> {
       config: mongoMaterial.config as unknown as Record<string, unknown>,
       secret: mongoMaterial.secret as unknown as Record<string, unknown>,
     });
-    const mongoRow = await markOrganizationToolSecretTested(db, {
+    const mongoAfterUpsert = await getOrganizationToolSecretPublic(db, {
       organizationId,
       provider: "traditional_gu_mongo",
-      ok: mongoCheck.ok,
-      error: mongoCheck.ok ? null : mongoCheck.detail,
     });
-    console.log(`stored traditional_gu_mongo -> status ${mongoRow?.status}`);
+    lifecycleObserved.traditional_gu_mongo = {
+      afterUpsert: mongoAfterUpsert?.status ?? null,
+    };
+    console.log(`after upsert  traditional_gu_mongo -> status ${mongoAfterUpsert?.status}`);
+    const mongoRow = await applyCheckOutcome(
+      db,
+      organizationId,
+      "traditional_gu_mongo",
+      mongoCheck
+    );
+    console.log(`after check   traditional_gu_mongo -> status ${mongoRow?.status}`);
   }
 
   // Read back through the public projection, which cannot select ciphertext.
@@ -296,7 +357,8 @@ async function main(): Promise<void> {
           organizationId,
           ranAt: new Date().toISOString(),
           lifecycle:
-            "every stored credential lands `pending_test`; a real connection check per provider flips it to `active` or records `invalid`",
+            "every stored credential lands `pending_test`; a real connection check per provider then flips it to `active`, records `invalid`, or - when the provider could not be reached at all - leaves it `pending_test` as unproven rather than broken",
+          lifecycleObserved,
           connectionChecks: {
             traditional_gu_firestore: firestoreCheck,
             traditional_gu_mongo: mongoCheck,
