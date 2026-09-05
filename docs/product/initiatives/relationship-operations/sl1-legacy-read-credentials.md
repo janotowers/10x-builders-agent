@@ -58,7 +58,12 @@ The deviation recorded in the Slice Plan was accepted while the source was belie
 - this **remains a temporary bootstrap deviation**;
 - the **C6 retirement boundary is unchanged**.
 
-One consequence is worth stating for whoever revisits this: the correction makes the deviation **load-bearing rather than merely tolerable**. A grant confined to `bot` would not reach the appointment source at all, so the wider grant is what gives the capability a source. If the deviation is ever narrowed before its retirement condition — which the revalidation does not require — the minimal grant is a collection-level `find` on `gu2.appointments`.
+Two things that are easy to conflate, kept apart for whoever revisits this:
+
+- **What SL-1 requires is access to `gu2.appointments`.** A grant confined to `bot` would not reach the appointment source at all.
+- **What the deviation is** remains the broader **database-level `read` across `bot` and `gu2`**, rather than the least-privilege minimum. That is the human-accepted temporary condition, and the correction does not change its nature.
+
+If it is ever narrowed before C6 — which the revalidation does not require — the minimum required Mongo grant is a collection-level `find` on `gu2.appointments`.
 
 The code allowlist follows the confirmed source: it names `gu2.appointments` and nothing else in Mongo.
 

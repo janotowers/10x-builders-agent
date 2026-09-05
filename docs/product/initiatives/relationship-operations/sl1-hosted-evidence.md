@@ -1,6 +1,6 @@
 # SL-1 — hosted evidence record
 
-> **Status:** **RS-2 hosted evidence complete.** SA-1.2 and SA-1.3 satisfied on 2026-09-05 through the Organization-scoped credential path, with the `pending_test → active` lifecycle observed in hosted staging. SL-1 is **not yet Done** — see §7 for the one remaining gate.
+> **Status:** **RS-2 hosted evidence complete.** SA-1.2 and SA-1.3 satisfied on 2026-09-05 through the Organization-scoped credential path, with the `pending_test → active` lifecycle observed in hosted staging. SL-1 is **not Done**: the required deterministic CI evidence for the landing commit is the remaining gate — see §7.
 > **Artifacts:** [`evidence/sl1-credential-lifecycle-2026-09-05.json`](evidence/sl1-credential-lifecycle-2026-09-05.json) · [`evidence/sl1-hosted-reads-2026-09-05-organization-credential.json`](evidence/sl1-hosted-reads-2026-09-05-organization-credential.json) · preliminary run: [`evidence/sl1-hosted-reads-2026-09-04.json`](evidence/sl1-hosted-reads-2026-09-04.json)
 > **Governing contract:** [`slice-plan.md`](slice-plan.md) §4, SL-1 Slice Acceptance Contract.
 > **Commands:** `npm run bootstrap:legacy-credentials`, then `npm run verify:legacy-reads` — see [`release-path-playbook.md`](../../../development/release-path-playbook.md) §4.1 and §5.
@@ -17,7 +17,7 @@
 
 Every legacy operation was a read. The only hosted mutations are Gu OS staging configuration and storage, listed in §5.
 
-**Why the legacy side is production.** Alebrixe's records exist only there: the stage Firestore project (`unggafb`) holds no document for the Alebrixe owner uid, so no lead in it resolves to the Alebrixe Organization. SA-1.2 asks for a *real Alebrixe lead*, and there is no other place one exists. This is the run the Slice Plan anticipated when it recorded that the production key "stays unwired until the hosted evidence run", and the reads sit inside approved SL-1 execution authority as set out in [`sl1-legacy-read-credentials.md`](sl1-legacy-read-credentials.md) §5.
+**Why the legacy side is production.** Alebrixe's records exist only there: the stage Firestore project (`unggafb`) holds no document for the Alebrixe owner uid, so no lead in it resolves to the Alebrixe Organization. SA-1.2 asks for a *real Alebrixe lead*, and there is no other place one exists. This is the run the Slice Plan anticipated when it recorded that the production key would stay deliberately unwired until the hosted evidence run, and the reads sit inside approved SL-1 execution authority as set out in [`sl1-legacy-read-credentials.md`](sl1-legacy-read-credentials.md) §5.
 
 **Human authorization.** The production read was authorized explicitly by the human Accountable for SL-1, including the delegation of selecting the lead.
 
@@ -66,7 +66,7 @@ Recorded because an evidence file that only lists successes is not evidence.
 - **No `delivery_status`, `source` or `wamid` on any item.** All 50 normalized to `deliveryStatus: "unknown"` — the correct reading of "the source recorded nothing", and exactly why `unknown` is a first-class value rather than a gap. The §15.7 writeback the audit describes was not observed on this lead. **SL-9's delivery-evidence design should verify it on recent traffic before depending on it.**
 - **`bindingState: "unbound"`.** No `legacy_lead` binding exists for this lead — SL-2 creates those. The read was safe because ownership containment, not a binding, carried it: the discovery case the gateway was designed for, exercised for real.
 - **`appointment_get` and `property_get_details` were not exercised against hosted data.** The approved DoD does not require it and the Slice contract explicitly disclaims the claim; they remain fixture-verified. The Mongo *credential* was proven; the Mongo *capability* was not.
-- **The cross-tenant / RLS suite did not run locally.** It requires a disposable PostgreSQL, which this machine cannot provide (no Docker daemon). It is not gating here: SL-1 adds no table, policy or RLS change and is not a multi-seat surface — the shared baseline gates those from SL-7 — and CI runs `test:rls` against a pgvector service on every push.
+- **The cross-tenant / RLS suite did not run locally.** It requires a disposable PostgreSQL, which this machine cannot provide (no Docker daemon). It is not gating here: SL-1 adds no table, policy or RLS change and is not a multi-seat surface — the shared baseline gates those from SL-7 — and CI runs `test:rls` against a pgvector service on every pull request.
 
 ## 5. Hosted mutations, and their restoration
 
@@ -91,6 +91,8 @@ The verifier now defaults to the Organization-scoped path; reading from the decl
 
 The Slice Acceptance Contract (SA-1.1 … SA-1.7) and the Definition of Done are satisfied, and RS-2's hosted evidence now exists. One gate remains:
 
-**Deterministic CI evidence does not exist yet.** RS-2 is defined as "RS-1, plus the hosted/staging evidence required by the Slice Acceptance Contract" (Methodology §14.2), and RS-1 is "appropriate local verification plus **the required deterministic CI evidence**". Everything is green locally — validators, type-check, lint and the full `test:selftests` suite — but the branch has not been pushed, so CI has not run, and `test:rls` runs only there. Methodology §14.2 is explicit that CI green is not Done; it is equally explicit that Done requires it.
+**The required deterministic CI evidence.** RS-2 is defined as "RS-1, plus the hosted/staging evidence required by the Slice Acceptance Contract" (Methodology §14.2), and RS-1 is "appropriate local verification plus **the required deterministic CI evidence**". Everything is green locally — validators, type-check, lint and the full `test:selftests` suite; `test:rls` needs a disposable PostgreSQL and runs in CI.
 
-When CI is green, what remains is the **Done record** in [`slice-plan.md`](slice-plan.md) §6 — environment reached, Release Scope achieved, material assertions verified, material things intentionally not exercised — plus the §5 register actuals for the calibration series that SL-1 opens.
+At the time this hosted evidence was captured, deterministic CI evidence was still outstanding. **CI / PR execution state is owned by GitHub and is not duplicated here** (Methodology §19.1). **SL-1 cannot be declared Done until the required CI evidence for the landing commit is green.**
+
+What remains after that is the **Done record** in [`slice-plan.md`](slice-plan.md) §6 — environment reached, Release Scope achieved, material assertions verified, material things intentionally not exercised — plus the §5 register actuals for the calibration series that SL-1 opens.
